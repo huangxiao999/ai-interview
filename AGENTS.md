@@ -21,7 +21,7 @@
 | 技术方案、TD决策、PF证明计划 | [TECHNICAL_DESIGN](docs/技术方案设计.md)、[TECHNICAL_DECISIONS](docs/技术决策记录.md)、[VERIFICATION_PLAN](docs/实现证明计划.md)；含已确认CF-03/CF-04，技术选择已确认，实施核实与PF/VP待执行，具体范围及状态以正文为准 |
 | 页面参考 | [参考图目录](docs/design-references-v1/)；图中数据和布局不替代业务规则 |
 | 工程环境、启动与基础检查 | [README](README.md)；实际依赖以 backend/pom.xml、Maven Wrapper 和 frontend/package-lock.json 为准，验证边界见 README |
-| 当前环境、首片详细设计与开发任务 | [ENVIRONMENT_VERIFICATION](docs/开发环境调整与基础验证.md)、[FIRST_SLICE_DESIGN](docs/首个业务切片详细设计.md)、[DEVELOPMENT_PLAN](docs/开发计划.md)、[DT01_VERIFICATION](<docs/DT-01 版本化持久化基础：实现与验证记录.md>)、[DT02_VERIFICATION](<docs/DT-02 账号与受控开通：实现与验证记录.md>)；DT-01已完成，DT-02两项审核修复待独立复审，登录业务/FS-A及PF/VP状态按证据范围判断 |
+| 当前环境、首片详细设计与开发任务 | [ENVIRONMENT_VERIFICATION](docs/开发环境调整与基础验证.md)、[FIRST_SLICE_DESIGN](docs/首个业务切片详细设计.md)、[DEVELOPMENT_PLAN](docs/开发计划.md)、[DT01_VERIFICATION](<docs/DT-01 版本化持久化基础：实现与验证记录.md>)、[DT02_VERIFICATION](<docs/DT-02 账号与受控开通：实现与验证记录.md>)；DT-01已完成，DT-02两项 P2 修复已复审、部分验证证据待补，登录业务/FS-A及PF/VP状态按证据范围判断 |
 
 - 区分已确认规则、建模/技术建议、待决项和实施待核实事实；“文档已写完”不代表方案已确认或产品已通过。
 - 后续已确认补充也属于依据，特别检查 CF、DACC、TD、PF 的适用内容；不能只读早期 PRD 而遗漏确认记录。
@@ -106,7 +106,7 @@
 - 已验证：在 `frontend/` 执行 `npm.cmd ci --no-audit --no-fund`、`npm.cmd run check`、`npm.cmd run dev`。check 包含静态/格式/类型检查和构建；使用 npm 锁文件，不混用包管理器。前端 5173 经代理连接后端 8080，仅监听本机，实际健康请求成功。
 - 默认bootstrap无DataSource/Flyway/Session仓储；local从backend目录读取根.env，Hikari schema=app，启动时由Flyway迁移。DT-01前0表的历史保留；当前app五张基础表、四张账号/权限/Session数据表0行。真实PG16/vector/JDBC及重复迁移证据见DT01_VERIFICATION。验证端口按空闲显式选择，不停止其他进程。
 - 根目录 `& './scripts/Verify-Persistence.ps1'` 已验证：每次新建独立PG16测试库，运行database-verification profile的6项集成检查并保留日志/manifest/数据库；DB环境变量恢复，不改.env。不能直接在开发库注入失败迁移，也不能用H2替代；禁用隔离条件时应失败而非静默跳过。
-- DT-02已本地复测、待独立复审：根目录 `& './scripts/Verify-Account.ps1'` 新建并保留隔离PG16测试库，运行6项账号/事务集成检查；默认后端构建与6项基础测试通过。登录名按原样区分大小写精确匹配，仅允许3～64位ASCII字母、数字、`.`、`_`、`-`；系统生成随机初始密码，经受控线下渠道交付。受控开通在 Spring 数据库初始化前要求交互控制台、当前 Windows 项目所有者及私有 ACL；新检出目录先构建 JAR，再由所有者检查并执行 `& './scripts/Protect-ProvisioningWorkspace.ps1'`。本地宽权限和非交互拒绝路径经隔离PG16验证，开发库未改；不在终端转录或日志记录明文密码。该约束仅适用于本地维护，不代表生产授权或登录已实现；证据见DT02_VERIFICATION。
+- DT-02两项 P2 修复已完成独立复审，部分证据待补：修复阶段在根目录执行 `& './scripts/Verify-Account.ps1'`，新建并保留隔离PG16测试库，运行6项账号/事务集成检查；默认后端构建与6项基础测试通过。独立复审只读核对，未重跑。登录名按原样区分大小写精确匹配，仅允许3～64位ASCII字母、数字、`.`、`_`、`-`；系统生成随机初始密码，经受控线下渠道交付。受控开通在 Spring 数据库初始化前要求交互控制台、当前 Windows 项目所有者及私有 ACL；新检出目录先构建 JAR，再由所有者检查并执行 `& './scripts/Protect-ProvisioningWorkspace.ps1'`。本地宽权限和非交互拒绝路径经隔离PG16复测，开发库未改；不在终端转录或日志记录明文密码。该约束仅适用于本地维护，不代表生产授权或登录已实现；待补验证及证据见DT02_VERIFICATION。
 - Compose及只读SQL命令见README/DT01_VERIFICATION，保留PG16卷，不执行down -v。infra/postgres中的001仅初始化vector；verify和verify-persistence为只读审计，不自动建业务表。私有文件规划仍为.local-data/private，未实现存储。秘密、用户资料、缓存、日志、备份及产物按忽略规则管理。
 - README 记录环境、详细命令、已执行结果及未验证项；基础测试不是 PF/VP 或 AI 质量验收。后续新增业务时补相关层次验证，不能只提供一条笼统测试命令冒充全部 PF 证明。
 - 修改前检查实际工作区及任务相关约定，保留已有改动；按用户目标实现可验证的小步闭环，功能或契约变化同步对应需求/设计/验收。遇到技术验证失败先修复或说明缺口，不擅自放宽业务规则。
