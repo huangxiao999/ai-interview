@@ -1,0 +1,20 @@
+# Commands are run from backend/. The shared root .env uses Java-properties-compatible KEY=VALUE lines.
+spring:
+  config:
+    import: "optional:file:../.env[.properties]"
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    hikari:
+      connection-timeout: 5000
+      schema: app
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    default-schema: app
+    schemas: app
+    create-schemas: true
+    baseline-on-migrate: false
+    clean-disabled: true
+    validate-on-migrate: true

@@ -1,0 +1,7 @@
+# Application-only startup. An UP response in this profile does not verify PostgreSQL.
+spring:
+  flyway:
+    enabled: false
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration

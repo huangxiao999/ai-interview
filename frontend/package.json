@@ -1,0 +1,39 @@
+{
+  "name": "interview-coach-frontend",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "^22.18.0",
+    "npm": ">=10"
+  },
+  "packageManager": "npm@10.9.9",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --strictPort",
+    "type-check": "vue-tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "build": "npm run type-check && vite build",
+    "check": "npm run lint && npm run format:check && npm run build"
+  },
+  "dependencies": {
+    "pinia": "4.1.0",
+    "vue": "3.5.44",
+    "vue-router": "5.4.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "22.18.12",
+    "@vitejs/plugin-vue": "6.0.10",
+    "eslint": "10.13.0",
+    "eslint-config-prettier": "10.1.8",
+    "eslint-plugin-vue": "10.12.0",
+    "globals": "17.13.0",
+    "prettier": "3.9.10",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1",
+    "vite": "8.3.0",
+    "vue-tsc": "3.3.13"
+  }
+}

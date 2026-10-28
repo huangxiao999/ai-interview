@@ -1,0 +1,29 @@
+# Local tools and dependency caches
+/.tools/
+/.cache/
+
+# Secrets and private development data
+.env
+.env.*
+!.env.example
+application-local.properties
+/.local-data/
+*.log
+*.dump
+*.backup
+
+# Java and frontend build output
+**/target/
+**/node_modules/
+**/dist/
+**/.vite/
+**/coverage/
+*.tsbuildinfo
+
+# Editors and OS files
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+~$*

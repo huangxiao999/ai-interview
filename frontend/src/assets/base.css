@@ -1,0 +1,93 @@
+:root {
+  font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+  color: #203134;
+  background: #f4f7f6;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+.bootstrap-shell {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 56px 24px;
+}
+
+.page-header {
+  margin-bottom: 32px;
+}
+
+.stage-label {
+  color: #08675f;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+h1 {
+  margin: 12px 0;
+  font-size: clamp(1.8rem, 4vw, 2.3rem);
+}
+
+h2 {
+  margin: 0 0 16px;
+  font-size: 1.15rem;
+}
+
+p {
+  line-height: 1.75;
+}
+
+.status-panel,
+.scope-panel {
+  padding: 26px;
+  margin-bottom: 20px;
+  border: 1px solid #dce6e3;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.connection-message {
+  font-weight: 600;
+}
+
+.connection-message[data-status='connected'] {
+  color: #08675f;
+}
+
+.connection-message[data-status='unavailable'] {
+  color: #9b3d26;
+}
+
+button {
+  padding: 11px 18px;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  color: #fff;
+  background: #087c72;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+button:focus-visible {
+  outline: 3px solid #77c9bf;
+  outline-offset: 3px;
+}
+
+.supporting-text {
+  color: #586d6b;
+  font-size: 0.875rem;
+}

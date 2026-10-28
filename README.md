@@ -1,0 +1,237 @@
+# AI 智能面试教练
+
+当前已完成工程初始化和DT-01持久化基础；DT-02受控试用账号开通已实现，两项审核修复待独立复审。登录、退出、当前身份、密码重置、简历、JD、计划、面试、评价、报告、额度和关联删除尚未实现。
+
+随后DT-01已完成：接入Flyway与Session JDBC，开发库app schema已迁移到V2；4项基础测试、6项真实PG集成检查及打包双模式启动通过，见 [DT-01记录](<docs/DT-01 版本化持久化基础：实现与验证记录.md>)。已有账号/权限/Session基础表不代表已实现登录业务。
+
+DT-02已实现M-01最小账号仓储、版本化密码散列、Actor及本地受控开通；独立审核提出的两项 P2 已修复并完成本地复测，**待独立复审**，见[DT-02记录](<docs/DT-02 账号与受控开通：实现与验证记录.md>)。此前环境与DT-01历史见[环境验证](docs/开发环境调整与基础验证.md)及[开发计划](docs/开发计划.md)。
+
+需求和设计基线见 [AGENTS.md](AGENTS.md) 的文档入口。CF-03 的服务端展示确认计次口径保持有效；CF-04 仅使用已审核知识库 RAG 与模型生成/评价，不接入实时搜索、网页抓取或模型内置联网。本工程未接入模型或向量化服务。
+
+## 文档编号速查
+
+`docs/` 中的编号用于把需求、设计、开发任务和验证证据相互关联；编号出现不表示对应功能已实现或验收通过。以下是本项目使用的前缀，不是通用行业标准：
+
+| 前缀 | 含义与示例 | 主要查看位置 |
+| --- | --- | --- |
+| `PRD` / `SCP` | 产品需求 / MVP 范围项，如 `PRD-01`、`SCP-01` | [PRD](docs/产品需求.docx)、[SCOPE](docs/交付范围.docx) |
+| `ACC` / `DACC` | 原需求验收案例 / 产品设计补充的专项验收案例，如 `ACC-01-01`、`DACC-01-01` | [ACCEPTANCE](docs/验收标准.docx)、[设计追溯](docs/需求与设计追溯.md) |
+| `CF` | 后续明确确认的业务规则或范围补充，如 `CF-03` 首题展示确认口径 | [产品流程](docs/产品流程与状态设计.md)、[技术决策](docs/技术决策记录.md)；以具体确认记录为准 |
+| `FL` / `PG` / `OV` / `IX` | 用户流程 / 页面 / 弹层或状态面板 / 交互规则，如 `FL-04`、`PG-04` | [产品流程](docs/产品流程与状态设计.md)、[交互设计](docs/页面与交互设计.md) |
+| `RK` / `ST-I`、`ST-R`、`ST-Q` / `OP` | 设计风险分支 / 面试、报告、额度状态 / 维护与验证事项 | [产品流程](docs/产品流程与状态设计.md) |
+| `G` / `M` / `AG` / `BR` / `UC` | 业务词汇 / 职责模块 / 候选聚合 / 业务规则 / 用例协调者 | [领域模型](docs/轻量领域模型与模块职责.md)、[一致性边界](docs/业务协作与一致性边界.md) |
+| `CB` / `SC` | 必须守护的一致性边界 / 并发与事件顺序场景 | [一致性边界](docs/业务协作与一致性边界.md) |
+| `TD` / `SD` | 技术决策项 / 首题展示方案候选，如 `TD-01`、`SD-05`；**不同于开发任务 `DT`** | [技术决策](docs/技术决策记录.md) |
+| `PF` / `VP` | 待证明的实现要求 / 对应的可执行验证场景；计划写好不等于已执行 | [一致性边界](docs/业务协作与一致性边界.md)、[证明计划](docs/实现证明计划.md) |
+| `FS-C` / `FS-A` | 首个账号切片的已确认补充 / 该切片的验收场景，如 `FS-C01`、`FS-A12` | [首片设计](docs/首个业务切片详细设计.md) |
+| `DT` | **开发任务**：把切片拆成可独立实施和检查的工作项，如 `DT-01` 持久化基础、`DT-02` 账号拥有者；完成 `DT-01～07` 只代表首个账号切片完成，不代表整个 MVP 完成 | [开发计划](docs/开发计划.md) |
+| `EV` / `DV` | 实际环境验证 / DT-01 持久化验证结果编号，如 `EV-01`、`DV-01` | [环境验证](docs/开发环境调整与基础验证.md)、[DT-01验证](<docs/DT-01 版本化持久化基础：实现与验证记录.md>) |
+
+阅读某个编号时，先看其来源文档的规则和状态，再看对应实现与验证记录；不能仅凭测试命令成功推断整个 MVP 已完成。
+
+## 工程结构
+
+```text
+backend/
+  pom.xml、mvnw、mvnw.cmd、.mvn/wrapper/   后端构建与 Maven Wrapper
+  src/main/java/dev/interviewcoach/
+    InterviewCoachApplication.java       启动入口
+    bootstrap/                            初始化访问边界
+  src/main/resources/                      通用、bootstrap、local 配置
+    db/migration/                          V1账号/权限、V2官方Session结构
+  src/test/java/dev/interviewcoach/         启动与访问边界基础测试
+frontend/
+  src/api/                                 请求适配与健康响应类型
+  src/router/、stores/、views/、assets/       路由、Pinia、初始化页面与样式
+  package.json、package-lock.json            固定依赖及检查脚本
+infra/postgres/001-vector.sql、verify.sql   仅创建扩展及独立只读验证
+scripts/Use-LocalTools.ps1                  当前终端的开发工具与缓存配置
+scripts/Verify-Persistence.ps1             新建隔离PG16测试库并运行DT-01检查
+scripts/Verify-Account.ps1                 新建隔离PG16测试库并运行DT-02检查
+scripts/Protect-ProvisioningWorkspace.ps1  收紧当前Windows检出目录的维护权限
+scripts/Provision-TrialAccount.ps1         仅交互式本地受控开通试用账号
+compose.yaml                               可选的本地开发数据库
+docs/                                      既有需求、产品与技术设计
+```
+
+领域 M-01～07 的职责及写入所有权仍以[领域模型](docs/轻量领域模型与模块职责.md)为准。Java已增量建立`identity`模块，包含账号读取与受控开通；没有批量创建其他模块空分层。Spring JDBC、Flyway与Session JDBC均由Boot管理；RestClient、登录认证和持久任务未实现。会话基础仓储已验证，认证及撤销协议尚未实现。
+
+## 环境与版本
+
+核实日期：2026-10-28。依赖以构建文件和锁文件为准。
+
+| 能力 | 本工程版本或约束 |
+| --- | --- |
+| Java | 使用当前完整JDK21；本机实际Oracle 21.0.12，不强制切换Temurin，不使用预览特性 |
+| Spring Boot | 4.1.2；MVC、JDBC、Security、Actuator 统一使用 Boot 依赖管理 |
+| Maven / Wrapper | 3.10.0 / 3.3.4；Wrapper 固定官方分发地址及 SHA-256 |
+| Node / npm | 22.23.4 / 10.9.9；项目要求 Node 22.x 且不低于 22.18 |
+| Vue / Vue Router / Pinia | 3.5.44 / 5.4.0 / 4.1.0 |
+| TypeScript / Vite / Vue 插件 | 6.0.3 / 8.3.0 / 6.0.10 |
+| 静态检查 | ESLint 10.13.0、typescript-eslint 8.72.1、Prettier 3.9.10；其余见 package.json |
+| PostgreSQL / pgvector | 镜像 `pgvector/pgvector:pg16`；本轮实际16.15 / 0.8.7，digest见环境验证文档 |
+| Flyway / Spring Session JDBC | 12.4.0 / 4.1.1；Boot统一管理，Session官方PostgreSQL结构由V2迁移 |
+
+TypeScript 未采用注册表中的最新大版本：当前 typescript-eslint 的声明兼容范围为 `<6.1.0`，因此固定 6.0.3，并已通过类型及静态检查。npm 依赖使用精确版本与锁文件，后续使用 `npm ci`。PG16镜像已实际拉取，标签仍为用户指定的可更新标签；记录实际digest用于核对，不承诺后续拉取相同版本。
+
+官方依据：[Boot 系统要求](https://docs.spring.io/spring-boot/system-requirements.html)、[Maven Wrapper](https://maven.apache.org/tools/wrapper/)、[Vue 环境前提](https://vuejs.org/guide/quick-start.html)、[Vite 版本](https://vite.dev/releases)、[pgvector 镜像与扩展](https://github.com/pgvector/pgvector)、[typescript-eslint 依赖声明](https://registry.npmjs.org/typescript-eslint/8.72.1)。[Temurin 元数据](https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse)仅保留初始化历史来源，当前不强制此供应商。版本背景见 [技术方案](docs/技术方案设计.md)。
+
+### 当前终端的工具配置
+
+以下命令适用于 Windows 上的 PowerShell 7（本次 7.6.5），初始目录为项目根目录。首次获取 Wrapper 和 npm 依赖需要访问官方仓库；不要求全局 Maven。
+
+```powershell
+# 执行目录：项目根目录；每个新的终端各执行一次
+& './scripts/Use-LocalTools.ps1'
+java -version
+node --version
+npm.cmd --version
+```
+
+脚本读取当前PATH上的完整JDK21，将当前进程的 `JAVA_HOME` 和Java工具路径对齐它，不再自动切换到便携Temurin。缓存和临时目录也只影响当前进程，不修改系统环境。便携Node仍可优先使用本项目 `.tools/` 版本；工具与 `.cache/` 不属于源码交付，换机器自行准备JDK21及符合要求的Node22，脚本不自动下载安装。当前Java可执行文件所在目录必须包含javac，不能只指向JRE或外部shim目录。
+
+当前机器全局 Node 22.14.0 不满足项目要求，因此使用便携 Node 22.23.4。项目短临时目录还用于避免当前 Windows 执行环境下 Java NIO 临时 socket 路径过长造成的启动失败。Wrapper 首次下载、依赖仓库和 npm 缓存均保留在项目忽略目录中。
+
+初始化历史记录：先前从Adoptium取得便携Temurin21.0.12.1+1，验证SHA-256为 `f9d6e191ab098c0d416e7d588a24420a8621cd2f4720dab2459b8b7b2d2d8b4e` 并完成当时检查；该工具及记录保留。随后用户明确改为使用本机现有JDK，本轮Oracle21.0.12构建与local启动另已验证，不把两个运行时的历史记录混写。
+
+## 启动与基础检查
+
+### 后端：终端一
+
+```powershell
+# 执行目录：项目根目录
+& './scripts/Use-LocalTools.ps1'
+Set-Location backend
+
+# 执行目录：backend；构建并运行六项基础测试，不执行数据库集成检查
+./mvnw.cmd '-Dmaven.repo.local=../.cache/maven-repository' -B -ntp verify
+
+# 执行目录：backend；启动已构建产物
+java -jar target/interview-coach-backend-0.0.1-SNAPSHOT.jar
+```
+
+默认使用 `bootstrap` profile，明确排除 DataSource 自动配置，便于不依赖数据库检查工程启动。`UP` 只说明应用运行，不证明 PostgreSQL、pgvector、模型或业务可用。
+
+后端仅监听 `127.0.0.1:8080`。只开放 GET 健康端点，不返回组件或敏感明细；其余请求拒绝访问。保留 CSRF，没有默认登录页、公开注册或产品登录功能。受控开通仅是本地维护命令，不提供网页账号入口；Session表已迁移，认证业务待DT-03。
+
+重新构建前先停止使用同一 JAR 的进程；Windows 下重打包运行中的文件会失败。
+
+```powershell
+# 执行目录：任意目录；另开终端检查运行中的后端
+Invoke-RestMethod -Uri 'http://127.0.0.1:8080/actuator/health' -NoProxy
+```
+
+### 前端：终端二
+
+```powershell
+# 执行目录：项目根目录
+& './scripts/Use-LocalTools.ps1'
+Set-Location frontend
+
+# 执行目录：frontend
+npm.cmd ci --no-audit --no-fund
+npm.cmd run check
+npm.cmd run dev
+```
+
+打开 <http://127.0.0.1:5173/>。初始化页面调用真实健康接口，显示检查中、已连接或失败重试，不展示虚构面试数据。`/actuator` 通过开发代理转发后端；两端只监听本机，端口被占用时启动失败，不静默切换端口。停止各服务使用对应终端的 Ctrl+C。
+
+`npm run check` 包含 ESLint、Prettier 检查、Vue/TypeScript 类型检查和 Vite 构建；可分别运行 `npm run lint`、`npm run format:check`、`npm run type-check`、`npm run build`。`npm run format` 会实际格式化前端文件。
+
+如需修改后端端口，在后端终端启动前设置 `$env:SERVER_PORT='8081'`，在前端终端启动前设置 `$env:BACKEND_URL='http://127.0.0.1:8081'`。这是开发配置，不是业务开关；该自定义端口组合尚未实测。前端健康请求的 5 秒超时只用于本初始化检查，不代表业务模型调用等待规则。不要把秘密放入 `VITE_*` 变量或前端构建产物。
+
+## 本地数据库与版本迁移
+
+本轮Docker Engine可用，PG16容器已启动并完成真实连接、扩展和local JDBC检查。后续执行前仍检查实际Engine及端口状态。Compose仅供本地开发，不是生产部署方案，不使用H2替代真实数据库。独立卷为 `postgres16-data`，挂载 `/var/lib/postgresql/data`，不复用PG18目录、不删除旧卷。
+
+```powershell
+# 执行目录：项目根目录；仅在尚无 .env 时复制，不覆盖已有文件
+if (-not (Test-Path -LiteralPath '.env')) {
+    Copy-Item -LiteralPath '.env.example' -Destination '.env'
+}
+# 新复制的 .env 须用编辑器修改 DB_PASSWORD 占位值；已有文件不覆盖。
+# 确认 Docker Engine 已运行后：
+docker compose config --quiet
+docker compose up -d --wait postgres
+```
+
+`.env` 同时供 Compose 与后端 `local` profile 使用，采用 UTF-8 的简单 `KEY=VALUE` 行，不使用 shell 引号、命令替换或多行秘密；当前开发示例不支持任意 dotenv 语法。不要打印完整配置或提交实际文件。环境变量可覆盖同名配置。默认连接 `127.0.0.1:15432/interview_coach`；修改 `DB_PORT` 或 `DB_NAME` 时须同步修改 `DB_URL`。
+
+本地数据库使用持久命名卷。Compose初始化脚本仅在全新目录创建vector扩展；已有卷不会重新执行，不要删除数据卷补跑。DT-01已采用Flyway：启动local时自动校验并迁移app schema，V1账号/权限、V2Session及Flyway历史共5表。Spring SQL和Session自动建表均禁用，迁移是结构唯一管理者。不能修改已应用文件或自动baseline/clean/repair未知结构。
+
+local使用Hikari schema=app，使应用JDBC与Session仓储在同一schema工作，Flyway显式schemas/default-schema=app。无需改写已有DB_URL或.env。更换数据库目标前必须核对所有者、既有schema/表及迁移历史，未知目标不可直接接管。公共vector类型/运算符在应用连接中使用public限定，原扩展不搬迁。
+
+```powershell
+# 执行目录：项目根；本轮已执行，只读查询版本、向量常量和非系统表数量
+Get-Content -LiteralPath infra/postgres/verify.sql -Raw | docker compose exec -T postgres sh -c 'exec psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -A -t'
+
+# 执行目录：backend；需已配置根目录 .env，且数据库已就绪
+# 与 bootstrap 相比，local 启用真实 DataSource；本次8080被其他进程占用，显式选择18080
+$env:SERVER_PORT='18080'
+java -jar target/interview-coach-backend-0.0.1-SNAPSHOT.jar --spring.profiles.active=local
+```
+
+SQL命令使用容器自己的已配置账号，不打印密码。另一个终端可请求 `http://127.0.0.1:18080/actuator/health`。此前EV阶段表数量0的历史保留；DT-01后非系统普通表总数5，四张账号/权限/Session表数据量均0。使用 `infra/postgres/verify-persistence.sql` 可只读核对迁移与表/数据清单，不再要求表数永远为0。
+
+未来私有文件规划为根目录下的 `.local-data/private/` 受控持久目录，位于 Web 静态资源目录之外，已忽略整个 `.local-data/`；本轮未创建用户目录或上传入口，未接入存储配置。接入时由后端鉴权访问，不能放入 `frontend/public` 或静态映射。日志、备份、秘密配置、构建产物及工具缓存也已配置忽略规则。
+
+## DT-02 受控账号开通与隔离验证
+
+登录名按原样区分大小写精确匹配，仅允许3～64位ASCII字母、数字、`.`、`_`、`-`。初始密码由系统随机生成，仅在成功开通后向本地交互控制台显示一次；操作者通过批准的线下渠道交付，勿开启终端转录或将其复制进文档、日志、工单。没有公开注册、登录或重置入口。
+
+本地开通要求当前 Windows 操作者拥有项目根、`.env`、脚本和已构建 JAR，且这些关键路径只允许该操作者、Administrators 和 SYSTEM 访问。新检出目录先构建 JAR，再由项目所有者检查并执行以下一次性权限加固；脚本只修改当前检出目录根 ACL，旧 ACL 备份在被忽略的 `.cache/`。若子项另有共享权限，脚本会拒绝并要求人工核查。不要在共享检出目录或持有真实凭证的他人目录执行。
+
+```powershell
+# 执行目录：项目根；先人工检查本地ACL，再由当前检出目录所有者加固
+& './scripts/Protect-ProvisioningWorkspace.ps1'
+
+# 执行目录：项目根；需要已构建后端JAR、local数据库配置及交互控制台
+& './scripts/Use-LocalTools.ps1'
+& './scripts/Provision-TrialAccount.ps1' -LoginName 'synthetic.user'
+
+# 执行目录：项目根；每次建立并保留独立PG16测试库，使用合成账号
+& './scripts/Verify-Account.ps1'
+```
+
+本轮6项基础测试、6项真实PG集成测试及交互式命令通过；宽权限与非交互路径均在 Flyway 前拒绝，隔离库无迁移和账号写入。测试数据库与证据位置见[DT-02记录](<docs/DT-02 账号与受控开通：实现与验证记录.md>)。该 ACL 边界仅适用于当前 Windows 本机维护，不替代正式环境的运维授权；独立复审仍待完成。测试库中的合成账号不得当作产品试用凭证。
+
+## DT-01隔离集成验证
+
+```powershell
+# 执行目录：项目根；本项目PG16服务须就绪，已有.env不覆盖
+& './scripts/Verify-Persistence.ps1'
+```
+
+已实际执行通过。脚本每次在本项目PG服务创建独立测试数据库，准备vector后运行Maven的database-verification profile，不在开发账号数据上做故障注入。每个测试库保留供核查，日志及manifest见 `.cache/dt01-test-run.json` 所指文件，报告在 `backend/target/failsafe-reports/`。重复执行会新增测试库，不自动删除；不要使用down -v清理。
+
+当前默认 `verify` 运行4项bootstrap和2项DT-02密码/Actor基础测试；上述DT-01脚本另运行6项集成检查，覆盖首次/重复迁移、约束、真实Session仓储、V2失败回滚/恢复及未知schema拒绝。没有隔离库环境变量时直接启用该profile会失败，不静默跳过或改用开发库。脚本当前只支持文档中的本地JDBC URL（无查询参数），不修改.env中的连接目标。
+
+完整结果及故障日志解释见 [DT01_VERIFICATION](<docs/DT-01 版本化持久化基础：实现与验证记录.md>)。这不是登录、FS-A12全案例、PF/VP或AI验收通过。
+
+## 初始化历史验证与当前限制
+
+以下表格保留2026-10-28先前Temurin初始化阶段的实际记录，**不是后续Oracle/PG16调整的当前状态**。后续结果单独记录在 [ENVIRONMENT_VERIFICATION](docs/开发环境调整与基础验证.md)：Oracle构建3项通过、PG16.15/vector0.8.7/向量常量/local JDBC通过；PF/VP及业务验收仍未执行。日志和构建产物位于忽略目录，无真实用户资料。
+
+| 检查 | 结果与边界 |
+| --- | --- |
+| Maven Wrapper 版本及下载校验 | Maven 3.10.0，分发包 SHA-256 固定，实际下载成功 |
+| 后端 `verify` | Temurin 21.0.12.1+1 下构建成功；3 项启动/健康/默认访问边界测试通过，详见 `backend/target/surefire-reports/` |
+| 打包 JAR 启动及健康请求 | 已启动，GET 健康接口返回 `UP`，未连接数据库 |
+| npm 锁文件重复安装 | `npm ci` 成功 |
+| 前端静态、格式、类型检查及构建 | `npm run check` 全部通过；未执行完整产品浏览器验收 |
+| 前端开发服务与代理 | 入口 HTTP 200，含应用挂载点，代理健康接口返回 `UP`；不等同于真实浏览器交互证明 |
+| Compose 配置解析 | 使用临时非敏感占位变量执行 `docker compose config --quiet` 成功，未启动容器 |
+| PostgreSQL、pgvector | Docker Engine 未运行；未拉取镜像、未创建数据库、未核实连接或扩展 |
+| 模型、向量化与账号能力 | 未接入、未调用，留存、价格、实际配额等实施核实未执行 |
+| PF/VP、业务与 AI 质量验收 | 未执行，不能将本轮基础检查记为通过 |
+
+本目录尚未初始化 Git；本轮没有提交、推送或部署。`.gitignore` 和 `.gitattributes` 已准备，但不代表已形成版本管理记录。
+
+## 下一阶段
+
+1. DT-01已完成；DT-02两项审核问题已修复并本地复测，等待独立复审。登录名和初始凭证规则已确认，Flyway/app schema及现有表结构不再是待选项。
+2. 复审后下一项才是[开发计划](docs/开发计划.md)中的DT-03会话认证与最小API；按首片设计审阅接口和Session细节并验证真实PG。DT-04重置、DT-05前端及后续MVP功能仍待单独实施。
+3. 将 [TD 决策](docs/技术决策记录.md) 的关键协作落到可实现协议，特别是 CF-03、操作恢复、报告/额度共同提交和删除屏障；按 [证明计划](docs/实现证明计划.md) 安排真实持久化、故障与浏览器验证，禁止用当前健康测试替代。
+4. 按需求追溯实现账号与资料等小步闭环，再逐步接入已审核知识库和模型适配；服务账号、资料审核、评分样例及留存备份能力另行核实。
+
+本轮DT-02交付到此停止，不自动开始DT-03。
