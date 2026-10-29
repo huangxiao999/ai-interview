@@ -179,6 +179,51 @@ try {
   assert.equal(await evaluate(`(async () => (await fetch('/api/auth/me')).status)()`), 401)
   assert.equal(await evaluate(`document.body.innerText.includes(${JSON.stringify(username)})`), false)
 
+  // The real login request completes and sets the browser Cookie, then only its readable body fails.
+  await evaluate(`(() => {
+    const nativeFetch = window.fetch.bind(window)
+    window.loginBodyFailure = { kind: '', loginPosts: 0, meAfterFailure: 0, injected: false }
+    window.fetch = async (input, init) => {
+      const pathname = new URL(input instanceof Request ? input.url : input, location.href).pathname
+      if (pathname === '/api/auth/login') window.loginBodyFailure.loginPosts += 1
+      if (pathname === '/api/auth/me' && window.loginBodyFailure.injected) {
+        window.loginBodyFailure.meAfterFailure += 1
+      }
+      const response = await nativeFetch(input, init)
+      if (pathname === '/api/auth/login' && response.status === 200 && window.loginBodyFailure.kind) {
+        const kind = window.loginBodyFailure.kind
+        window.loginBodyFailure.kind = ''
+        window.loginBodyFailure.injected = true
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.error(kind === 'syntax' ? new SyntaxError('synthetic truncated body')
+              : new TypeError('synthetic interrupted body'))
+          }
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      return response
+    }
+  })()`)
+
+  for (const kind of ['type', 'syntax']) {
+    await evaluate(`(() => { window.loginBodyFailure.kind = ${JSON.stringify(kind)};
+      window.loginBodyFailure.loginPosts = 0;
+      window.loginBodyFailure.meAfterFailure = 0;
+      window.loginBodyFailure.injected = false })()`)
+    await fill(username, password)
+    await waitUntil(
+      `location.pathname === '/app' || document.body.innerText.includes('暂时无法核实登录状态')`,
+      `${kind} login body outcome`,
+    )
+    const result = await evaluate(`({ path: location.pathname, ...window.loginBodyFailure })`)
+    assert.equal(result.injected, true, `${kind}: expected a 200 login response with failed body`)
+    assert.equal(result.loginPosts, 1, `${kind}: login must not be submitted twice`)
+    assert.ok(result.meAfterFailure >= 1, `${kind}: login result must be checked with me`)
+    assert.equal(result.path, '/app', `${kind}: confirmed login must open the workspace`)
+    await evaluate(`Array.from(document.querySelectorAll('button')).find(button => button.textContent.includes('退出登录')).click()`)
+    await waitUntil(`location.pathname === '/login' && !!document.querySelector('#login-name')`, `${kind} logout`)
+  }
+
   process.stdout.write('DT-05 real Chrome login frontend checks passed.\n')
 } finally {
   socket?.close()

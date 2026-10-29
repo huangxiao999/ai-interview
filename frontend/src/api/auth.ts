@@ -68,7 +68,13 @@ export async function submitLogin(loginName: string, password: string): Promise<
       body: new URLSearchParams({ username: loginName, password }),
     })
     clearCsrf() // Authentication rotates the session and invalidates its old CSRF token.
-    const payload: unknown = await response.json()
+    let payload: unknown
+    try {
+      payload = await response.json()
+    } catch {
+      // A successful response header does not mean its body arrived; the session may already exist.
+      throw new ApiError(null, 'RESULT_UNKNOWN', '登录结果无法确认')
+    }
     return parseIdentity(payload)
   } catch (error: unknown) {
     if (error instanceof ApiError && error.code === 'CSRF_INVALID') clearCsrf()
