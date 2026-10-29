@@ -147,6 +147,23 @@ class SessionAuthenticationIT {
     }
 
     @Test
+    void loginNameIsMatchedWithoutTrimming() throws Exception {
+        Client client = new Client();
+        String token = client.csrf();
+        for (String invalid : new String[] {" " + login, login + " ", "\t" + login,
+                login + "\t", "用" + login, "ab", "a".repeat(65)}) {
+            HttpResponse<String> response = client.login(invalid, password, token);
+            assertThat(response.statusCode()).as("invalid login name was accepted").isEqualTo(400);
+            assertThat(response.body()).contains("INVALID_INPUT");
+            assertThat(client.get("/api/auth/me").statusCode()).isEqualTo(401);
+        }
+        assertThat(client.login(login.toUpperCase(java.util.Locale.ROOT), password, token).statusCode())
+                .isEqualTo(401);
+        assertThat(client.login(login, password + " ", token).statusCode()).isEqualTo(401);
+        assertThat(client.login(login, password, token).statusCode()).isEqualTo(200);
+    }
+
+    @Test
     void persistedExpiryAndCredentialVersionRejectOldSession() throws Exception {
         Client expired = new Client();
         assertThat(expired.login(login, password, expired.csrf()).statusCode()).isEqualTo(200);

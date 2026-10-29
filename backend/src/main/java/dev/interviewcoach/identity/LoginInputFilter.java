@@ -1,6 +1,7 @@
 package dev.interviewcoach.identity;
 
 import java.io.IOException;
+import java.util.regex.Pattern;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -11,6 +12,7 @@ import tools.jackson.databind.ObjectMapper;
 
 final class LoginInputFilter extends OncePerRequestFilter {
 
+    private static final Pattern LOGIN_NAME = Pattern.compile("[A-Za-z0-9._-]{3,64}");
     private final ObjectMapper mapper;
 
     LoginInputFilter(ObjectMapper mapper) {
@@ -33,6 +35,12 @@ final class LoginInputFilter extends OncePerRequestFilter {
             if (name == null || name.isEmpty() || password == null || password.isEmpty()) {
                 JsonSecurityResponses.write(response, mapper, 400,
                         new JsonSecurityResponses.ErrorBody("INVALID_INPUT", "请输入账号和密码"));
+                return;
+            }
+            // Validate the raw value before Spring Security trims the username in its form filter.
+            if (!LOGIN_NAME.matcher(name).matches()) {
+                JsonSecurityResponses.write(response, mapper, 400,
+                        new JsonSecurityResponses.ErrorBody("INVALID_INPUT", "登录名格式不正确"));
                 return;
             }
         }

@@ -132,3 +132,10 @@ Postman CLI is installed on this device, and can be used for API Engineering wor
 <!-- postman-cli:installation:end -->
 
 该信息来自工作环境说明，不代表本项目已定义 API 或完成接口验证。
+
+## Code Review Rules
+
+- Codex Review 的审查意见使用简体中文；保留优先级标识、文件路径、代码标识、接口名和错误码原文。自动生成的固定标题或状态文字不作为语言要求。
+- 每条问题指出触发条件、实际行为、违反的已确认规则或可能后果，并给出可执行的修复方向及必要的回归测试；标明对应文件和行号。无法从代码或证据确认时说明不确定性，不把猜测写成已复现缺陷。
+- 优先审查本项目的身份与权限、用户数据隔离、会话与 CSRF、固定版本、面试进度、额度结算、报告发布及关联删除；对照适用的 PRD、ACC/DACC、CB/SC 和 PF，不因 CI 通过就推断真实 PostgreSQL、浏览器或业务验收已通过。
+- 审查范围以 PR 变更及其必要上下文为主；格式、类型和其他确定性检查交给 CI。不要为当前 PR 无关的后续功能提出阻塞性要求。
