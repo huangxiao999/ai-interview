@@ -33,6 +33,21 @@ export const useSessionStore = defineStore('session', () => {
   const busy = ref(false)
   let initialized = false
   let generation = 0
+  let identityChannel: BroadcastChannel | null = null
+
+  function startBrowserSync(): void {
+    if (identityChannel || typeof BroadcastChannel === 'undefined') return
+    identityChannel = new BroadcastChannel('interview-coach-identity')
+    identityChannel.onmessage = (event: MessageEvent<unknown>) => {
+      if (event.data !== 'identity-changed') return
+      // A notification carries no identity; only the server can establish the current account.
+      void refreshIdentity()
+    }
+  }
+
+  function announceIdentityChange(): void {
+    identityChannel?.postMessage('identity-changed')
+  }
 
   function setAnonymous(): void {
     identity.value = null
@@ -45,6 +60,7 @@ export const useSessionStore = defineStore('session', () => {
     identity.value = null
     status.value = 'checking'
     message.value = ''
+    clearCsrf()
     try {
       const current = await getIdentity()
       if (requestGeneration === generation) {
@@ -58,7 +74,7 @@ export const useSessionStore = defineStore('session', () => {
         if (status.value === 'uncertain') message.value = errorMessage(error)
       }
     }
-    initialized = true
+    if (requestGeneration === generation) initialized = true
     return status.value
   }
 
@@ -70,9 +86,11 @@ export const useSessionStore = defineStore('session', () => {
     if (busy.value || status.value !== 'anonymous') return false
     busy.value = true
     message.value = ''
+    const operationGeneration = ++generation
     let submitted = false
     try {
       await refreshCsrf()
+      if (operationGeneration !== generation || status.value !== 'anonymous') return false
       submitted = true
       await submitLogin(loginName, password)
       const verified = await refreshIdentity()
@@ -82,11 +100,13 @@ export const useSessionStore = defineStore('session', () => {
         } catch {
           clearCsrf() // A later write will request a fresh token before submission.
         }
+        announceIdentityChange()
         return true
       }
       if (verified === 'anonymous') message.value = '登录状态已失效，请重新登录'
       return false
     } catch (error: unknown) {
+      if (operationGeneration !== generation && !submitted) return false
       if (
         submitted &&
         error instanceof ApiError &&
@@ -99,11 +119,12 @@ export const useSessionStore = defineStore('session', () => {
           } catch {
             clearCsrf()
           }
+          announceIdentityChange()
           return true
         }
         if (verified === 'anonymous') message.value = '未确认登录成功，请检查后重试'
       } else {
-        message.value = errorMessage(error)
+        if (operationGeneration === generation) message.value = errorMessage(error)
       }
       return false
     } finally {
@@ -115,24 +136,41 @@ export const useSessionStore = defineStore('session', () => {
     if (busy.value || status.value !== 'authenticated') return false
     busy.value = true
     message.value = ''
+    const accountId = identity.value?.accountId
+    const operationGeneration = ++generation
     let submitted = false
     try {
       await refreshCsrf()
+      if (
+        operationGeneration !== generation ||
+        status.value !== 'authenticated' ||
+        identity.value?.accountId !== accountId
+      )
+        return false
       submitted = true
       await submitLogout()
-      setAnonymous()
-      return true
+      const verified = await refreshIdentity()
+      if (verified === 'anonymous') {
+        announceIdentityChange()
+        return true
+      }
+      if (verified === 'authenticated') message.value = '当前登录身份已变化，请确认后操作'
+      return false
     } catch (error: unknown) {
+      if (operationGeneration !== generation && !submitted) return false
       if (
         submitted &&
         error instanceof ApiError &&
         (error.status === null || error.status >= 500)
       ) {
         const verified = await refreshIdentity()
-        if (verified === 'anonymous') return true
+        if (verified === 'anonymous') {
+          announceIdentityChange()
+          return true
+        }
         if (verified === 'authenticated') message.value = '尚未退出，请重试'
       } else {
-        message.value = errorMessage(error)
+        if (operationGeneration === generation) message.value = errorMessage(error)
       }
       return false
     } finally {
@@ -140,5 +178,15 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  return { status, identity, message, busy, refreshIdentity, ensureIdentity, login, logout }
+  return {
+    status,
+    identity,
+    message,
+    busy,
+    refreshIdentity,
+    ensureIdentity,
+    login,
+    logout,
+    startBrowserSync,
+  }
 })

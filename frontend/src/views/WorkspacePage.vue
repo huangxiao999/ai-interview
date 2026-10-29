@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
-import { onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session'
 
@@ -15,13 +14,6 @@ async function signOut(): Promise<void> {
 async function retryIdentity(): Promise<void> {
   if ((await session.refreshIdentity()) === 'anonymous') await router.replace('/login')
 }
-
-function onFocus(): void {
-  if (status.value === 'authenticated' && !busy.value) void retryIdentity()
-}
-
-onMounted(() => window.addEventListener('focus', onFocus))
-onUnmounted(() => window.removeEventListener('focus', onFocus))
 </script>
 
 <template>
