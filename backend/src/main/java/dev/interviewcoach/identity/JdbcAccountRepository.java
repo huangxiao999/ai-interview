@@ -48,6 +48,10 @@ class JdbcAccountRepository {
                 row.credentialVersion(), findAuthorities(row.id())));
     }
 
+    void lockById(UUID accountId) {
+        jdbc.queryForList("SELECT id FROM identity_account WHERE id = ? FOR UPDATE", UUID.class, accountId);
+    }
+
     void insert(UUID accountId, String loginName, String passwordHash, Set<AccountAuthority> authorities) {
         jdbc.update("INSERT INTO identity_account(id, login_name, password_hash) VALUES (?, ?, ?)",
                 accountId, loginName, passwordHash);
