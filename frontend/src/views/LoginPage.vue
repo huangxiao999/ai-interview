@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
-import { onBeforeUnmount, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { onBeforeUnmount, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { safeReturnPath } from '../router/returnPath'
 import { useSessionStore } from '../stores/session'
 
 const router = useRouter()
+const route = useRoute()
 const session = useSessionStore()
 const { status, message, busy } = storeToRefs(session)
 const loginName = ref('')
@@ -26,16 +28,18 @@ async function submit(): Promise<void> {
     passwordInput.value?.focus()
     return
   }
-  const succeeded = await session.login(loginName.value, password.value)
-  if (succeeded) {
-    password.value = ''
-    await router.replace('/app')
-  }
+  if (await session.login(loginName.value, password.value)) password.value = ''
 }
 
 async function retryIdentity(): Promise<void> {
-  if ((await session.refreshIdentity()) === 'authenticated') await router.replace('/app')
+  await session.refreshIdentity()
 }
+
+watch([status, busy], ([current, pending]) => {
+  if (current === 'authenticated' && !pending) {
+    void router.replace(safeReturnPath(route.query.redirect))
+  }
+})
 
 onBeforeUnmount(() => {
   password.value = ''
