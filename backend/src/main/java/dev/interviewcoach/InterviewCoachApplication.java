@@ -1,6 +1,6 @@
 package dev.interviewcoach;
 
-import dev.interviewcoach.identity.TrialAccountProvisioningPreflight;
+import dev.interviewcoach.identity.AccountMaintenancePreflight;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
@@ -9,7 +9,7 @@ public class InterviewCoachApplication {
 
     public static void main(String[] args) {
         var application = new SpringApplication(InterviewCoachApplication.class);
-        application.addListeners(new TrialAccountProvisioningPreflight());
+        application.addListeners(new AccountMaintenancePreflight());
         application.run(args);
     }
 }
