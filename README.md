@@ -1,12 +1,12 @@
 # AI 智能面试教练
 
-当前已完成工程初始化、DT-01持久化基础、DT-02受控试用账号开通、DT-03后端会话认证及DT-04受控密码重置与旧会话撤销。DT-02两项 P2 修复已复审，部分证据待补。产品登录页面、简历、JD、计划、面试、评价、报告、额度和关联删除尚未实现。
+当前已完成工程初始化、DT-01持久化基础、DT-02受控试用账号开通、DT-03后端会话认证、DT-04受控密码重置与旧会话撤销，以及DT-05最小登录前端。DT-02两项 P2 修复已复审，部分证据待补。简历、JD、计划、面试、评价、报告、额度和关联删除尚未实现。
 
 随后DT-01已完成：接入Flyway与Session JDBC，开发库app schema已迁移到V2；4项基础测试、6项真实PG集成检查及打包双模式启动通过，见 [DT-01记录](<docs/DT-01 版本化持久化基础：实现与验证记录.md>)。已有账号/权限/Session基础表不代表已实现登录业务。
 
 DT-02已实现M-01最小账号仓储、版本化密码散列、Actor及本地受控开通；独立审核提出的两项 P2 已修复并完成本地复测，复审未发现新的可复现代码缺陷，**部分自动化及故障场景证据待补**，见[DT-02记录](<docs/DT-02 账号与受控开通：实现与验证记录.md>)。此前环境与DT-01历史见[环境验证](docs/开发环境调整与基础验证.md)及[开发计划](docs/开发计划.md)。
 
-DT-03已实现后端 `csrf/login/me/logout`、30分钟空闲会话、CSRF、登录时会话ID轮换、每请求凭证代次核实及 JSON 错误；真实PG16与Chrome验证范围见[DT-03记录](<docs/DT-03 会话认证与最小API：实现与验证记录.md>)。DT-04已实现受控密码重置，新散列与凭证代次共同提交，旧会话立即逻辑失效；适用证据见[DT-04记录](<docs/DT-04 重置与会话撤销：实现与验证记录.md>)。没有产品登录页面或私有资料接口，私有资料隔离尚未验收。
+DT-03已实现后端 `csrf/login/me/logout`、30分钟空闲会话、CSRF、登录时会话ID轮换、每请求凭证代次核实及 JSON 错误；真实PG16与Chrome验证范围见[DT-03记录](<docs/DT-03 会话认证与最小API：实现与验证记录.md>)。DT-04已实现受控密码重置，新散列与凭证代次共同提交，旧会话立即逻辑失效；适用证据见[DT-04记录](<docs/DT-04 重置与会话撤销：实现与验证记录.md>)。DT-05提供真实登录页面及受保护的空工作区，适用证据见[DT-05记录](<docs/DT-05 最小登录前端：实现与验证记录.md>)。没有私有资料接口，私有资料隔离尚未验收。
 
 需求和设计基线见 [AGENTS.md](AGENTS.md) 的文档入口。CF-03 的服务端展示确认计次口径保持有效；CF-04 仅使用已审核知识库 RAG 与模型生成/评价，不接入实时搜索、网页抓取或模型内置联网。本工程未接入模型或向量化服务。
 
@@ -43,8 +43,8 @@ backend/
     db/migration/                          V1账号/权限、V2官方Session结构
   src/test/java/dev/interviewcoach/         启动与访问边界基础测试
 frontend/
-  src/api/                                 请求适配与健康响应类型
-  src/router/、stores/、views/、assets/       路由、Pinia、初始化页面与样式
+  src/api/                                 认证请求适配与错误类型
+  src/router/、stores/、views/、assets/       受保护路由、Pinia、登录/工作区页面与样式
   package.json、package-lock.json            固定依赖及检查脚本
 infra/postgres/001-vector.sql、verify.sql   仅创建扩展及独立只读验证
 scripts/Use-LocalTools.ps1                  当前终端的开发工具与缓存配置
@@ -54,6 +54,8 @@ scripts/Verify-SessionAuth.ps1             新建隔离PG16测试库并运行DT-
 scripts/Verify-SessionBrowser.mjs          DT-03真实Chrome Cookie与CSRF检查，由验证脚本间接运行
 scripts/Verify-PasswordReset.ps1           新建隔离PG16测试库并运行DT-04重置/竞态检查
 scripts/Verify-ResetBrowser.mjs            DT-04真实Chrome双标签撤销检查，由验证脚本间接运行
+scripts/Verify-LoginFrontend.ps1           新建隔离PG16测试库并验证DT-05实际页面
+scripts/Verify-LoginBrowser.mjs            DT-05真实Chrome页面检查，由验证脚本间接运行
 scripts/Protect-ProvisioningWorkspace.ps1  收紧当前Windows检出目录的维护权限
 scripts/Provision-TrialAccount.ps1         仅交互式本地受控开通试用账号
 scripts/Reset-TrialAccountPassword.ps1     仅交互式本地受控重置试用账号
@@ -119,7 +121,12 @@ java -jar target/interview-coach-backend-0.0.1-SNAPSHOT.jar
 
 默认使用 `bootstrap` profile，明确排除 DataSource 自动配置，便于不依赖数据库检查工程启动。`UP` 只说明应用运行，不证明 PostgreSQL、pgvector、模型或业务可用。
 
-后端仅监听 `127.0.0.1:8080`。默认 `bootstrap` 模式只开放 GET 健康端点，不返回组件或敏感明细；其余请求拒绝访问。在真实数据库的 `local` 模式下提供 DT-03 后端认证 API，保留 CSRF；没有框架默认登录页、公开注册或 Vue 产品登录页面。受控开通仍仅是本地维护命令。
+后端仅监听 `127.0.0.1:8080`。默认 `bootstrap` 模式只开放 GET 健康端点，不返回组件或敏感明细；其余请求拒绝访问。**体验登录页面需要启动真实数据库的 `local` 模式**，提供 DT-03 后端认证 API 并保留 CSRF；没有框架默认登录页或公开注册。受控开通仍仅是本地维护命令。
+
+```powershell
+# 执行目录：backend；先按下文准备 .env 与 PG16，并完成构建
+java -jar target/interview-coach-backend-0.0.1-SNAPSHOT.jar --spring.profiles.active=local
+```
 
 重新构建前先停止使用同一 JAR 的进程；Windows 下重打包运行中的文件会失败。
 
@@ -141,7 +148,7 @@ npm.cmd run check
 npm.cmd run dev
 ```
 
-打开 <http://127.0.0.1:5173/>。初始化页面调用真实健康接口，显示检查中、已连接或失败重试，不展示虚构面试数据。`/actuator` 通过开发代理转发后端；两端只监听本机，端口被占用时启动失败，不静默切换端口。停止各服务使用对应终端的 Ctrl+C。
+用 `local` 后端启动后，打开 <http://127.0.0.1:5173/>。页面经 `/api` 开发代理读取真实身份，匿名进入登录页；已有受控开通账号可登录、查看工作区占位并退出。默认 `bootstrap` 后端不提供认证接口，不能用于登录页面联调。两端只监听本机，端口被占用时启动失败，不静默切换端口。停止各服务使用对应终端的 Ctrl+C。
 
 `npm run check` 包含 ESLint、Prettier 检查、Vue/TypeScript 类型检查和 Vite 构建；可分别运行 `npm run lint`、`npm run format:check`、`npm run type-check`、`npm run build`。`npm run format` 会实际格式化前端文件。
 
@@ -184,7 +191,7 @@ SQL命令使用容器自己的已配置账号，不打印密码。另一个终�
 
 ## DT-02 受控账号开通与隔离验证
 
-登录名按原样区分大小写精确匹配，仅允许3～64位ASCII字母、数字、`.`、`_`、`-`。初始密码由系统随机生成，仅在成功开通后向本地交互控制台显示一次；操作者通过批准的线下渠道交付，勿开启终端转录或将其复制进文档、日志、工单。没有公开注册、产品登录页面或重置入口；后端登录 API 已由 DT-03 实现。
+登录名按原样区分大小写精确匹配，仅允许3～64位ASCII字母、数字、`.`、`_`、`-`。初始密码由系统随机生成，仅在成功开通后向本地交互控制台显示一次；操作者通过批准的线下渠道交付，勿开启终端转录或将其复制进文档、日志、工单。没有公开注册或重置入口；后端登录 API 已由 DT-03 实现，登录页面由 DT-05 提供。
 
 本地开通要求当前 Windows 操作者拥有项目根、`.env`、脚本和已构建 JAR，且这些关键路径只允许该操作者、Administrators 和 SYSTEM 访问。新检出目录先构建 JAR，再由项目所有者检查并执行以下一次性权限加固；脚本只修改当前检出目录根 ACL，旧 ACL 备份在被忽略的 `.cache/`。若子项另有共享权限，脚本会拒绝并要求人工核查。不要在共享检出目录或持有真实凭证的他人目录执行。
 
@@ -227,6 +234,15 @@ DT-03 最新隔离回归的 9 项集成检查及 Chrome 浏览器检查结果见
 
 最新 6 项基础测试、6 项真实 PostgreSQL/HTTP 集成及 Chrome 双标签检查通过；受控交互命令已在隔离合成账号上验证，结果与先前测试脚本失败记录见[DT-04记录](<docs/DT-04 重置与会话撤销：实现与验证记录.md>)。重置后的旧会话以账号凭证代次立即失效；Session 物理清理是尽力执行，不把清理行数当撤销是否成功的判据。
 
+## DT-05 最小登录前端验证
+
+```powershell
+# 执行目录：项目根；每次创建并保留独立 PG16 库，启动临时后端、Vite 与真实 Chrome
+& './scripts/Verify-LoginFrontend.ps1'
+```
+
+前端登录、身份核实、受保护空工作区与退出已可操作；测试使用随机合成账号，不改开发账号数据。`frontend/` 下 `npm.cmd run check` 通过；隔离库中 6 项基础测试和 1 项真实页面集成测试通过。详细场景、首次中断记录及证据见[DT-05记录](<docs/DT-05 最小登录前端：实现与验证记录.md>)。DT-06 的多窗口与回包丢失验证、真实私有资源隔离及完整 FS-A/PF/VP 仍未完成。
+
 ## DT-01隔离集成验证
 
 ```powershell
@@ -262,8 +278,8 @@ DT-03 最新隔离回归的 9 项集成检查及 Chrome 浏览器检查结果见
 ## 下一阶段
 
 1. DT-01已完成；DT-02两项 P2 修复已本地复测并完成独立复审，部分验证证据待补。登录名和初始凭证规则已确认，Flyway/app schema及现有表结构不再是待选项。
-2. DT-03 后端认证与 DT-04 受控重置各自范围已实现并通过适用的隔离 PG 与浏览器验证；下一实现任务是[开发计划](docs/开发计划.md)中的 DT-05 最小登录前端。DT-02 补证项另行跟踪；后续 MVP 功能仍待单独实施。
+2. DT-03 后端认证、DT-04 受控重置及 DT-05 最小登录前端已完成各自范围；下一任务是[开发计划](docs/开发计划.md)中的 DT-06 浏览器与恢复闭环。DT-02 补证项另行跟踪；后续 MVP 功能仍待单独实施。
 3. 将 [TD 决策](docs/技术决策记录.md) 的关键协作落到可实现协议，特别是 CF-03、操作恢复、报告/额度共同提交和删除屏障；按 [证明计划](docs/实现证明计划.md) 安排真实持久化、故障与浏览器验证，禁止用当前健康测试替代。
 4. 按需求追溯实现账号与资料等小步闭环，再逐步接入已审核知识库和模型适配；服务账号、资料审核、评分样例及留存备份能力另行核实。
 
-本轮 DT-04 交付到此停止，不自动开始 DT-05。
+本轮 DT-05 交付到此停止，不自动开始 DT-06。
