@@ -10,6 +10,7 @@ if ($current.Owner -ne $operator.Name) {
     throw 'Only the current checkout owner can protect this workspace.'
 }
 foreach ($path in @('.env', 'scripts/Provision-TrialAccount.ps1',
+        'scripts/Reset-TrialAccountPassword.ps1',
         'backend/target/interview-coach-backend-0.0.1-SNAPSHOT.jar')) {
     if (-not (Test-Path -LiteralPath (Join-Path $projectRoot $path) -PathType Leaf)) {
         throw "Required provisioning file is missing: $path"
@@ -18,7 +19,7 @@ foreach ($path in @('.env', 'scripts/Provision-TrialAccount.ps1',
 
 $checkedPaths = @('.', '.env', 'backend', 'backend/target',
     'backend/target/interview-coach-backend-0.0.1-SNAPSHOT.jar',
-    'scripts', 'scripts/Provision-TrialAccount.ps1')
+    'scripts', 'scripts/Provision-TrialAccount.ps1', 'scripts/Reset-TrialAccountPassword.ps1')
 $alreadyPrivate = $current.AreAccessRulesProtected
 foreach ($path in $checkedPaths) {
     $acl = Get-Acl -LiteralPath (Join-Path $projectRoot $path)

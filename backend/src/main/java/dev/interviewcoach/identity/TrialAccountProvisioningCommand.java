@@ -21,8 +21,8 @@ final class TrialAccountProvisioningCommand implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments arguments) {
         Console console = System.console();
-        TrialAccountProvisioningPreflight.requireAuthorized(arguments.getSourceArgs(), console,
-                Path.of("").toAbsolutePath().normalize());
+        AccountMaintenancePreflight.requireAuthorized(arguments.getSourceArgs(), console,
+                Path.of("").toAbsolutePath().normalize(), AccountMaintenancePreflight.Operation.PROVISION);
         List<String> loginNames = arguments.getOptionValues("app.provision.login-name");
         if (loginNames == null || loginNames.size() != 1) {
             throw new IllegalArgumentException("Provide exactly one --app.provision.login-name value.");

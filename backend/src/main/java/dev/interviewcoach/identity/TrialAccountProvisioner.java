@@ -1,7 +1,5 @@
 package dev.interviewcoach.identity;
 
-import java.security.SecureRandom;
-import java.util.Base64;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -18,7 +16,6 @@ final class TrialAccountProvisioner {
     private final JdbcAccountRepository accounts;
     private final PasswordHashes passwordHashes;
     private final TransactionTemplate transaction;
-    private final SecureRandom random = new SecureRandom();
 
     TrialAccountProvisioner(JdbcAccountRepository accounts, PasswordHashes passwordHashes,
             PlatformTransactionManager transactionManager) {
@@ -32,10 +29,7 @@ final class TrialAccountProvisioner {
             throw new IllegalArgumentException("Login name must be 3-64 ASCII letters, digits, '.', '_' or '-'.");
         }
 
-        byte[] passwordBytes = new byte[24];
-        random.nextBytes(passwordBytes);
-        String initialPassword = Base64.getUrlEncoder().withoutPadding().encodeToString(passwordBytes);
-        java.util.Arrays.fill(passwordBytes, (byte) 0);
+        String initialPassword = RandomAccountPassword.generate();
         String passwordHash = passwordHashes.encode(initialPassword);
         UUID accountId = UUID.randomUUID();
         transaction.executeWithoutResult(status -> accounts.insert(accountId, loginName, passwordHash,

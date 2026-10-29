@@ -52,6 +52,18 @@ class JdbcAccountRepository {
         jdbc.queryForList("SELECT id FROM identity_account WHERE id = ? FOR UPDATE", UUID.class, accountId);
     }
 
+    void updatePasswordAndVersion(UUID accountId, String passwordHash) {
+        int changed = jdbc.update("""
+                UPDATE identity_account
+                SET password_hash = ?, credential_version = credential_version + 1,
+                    updated_at = clock_timestamp()
+                WHERE id = ? AND credential_version < 9223372036854775807
+                """, passwordHash, accountId);
+        if (changed != 1) {
+            throw new IllegalStateException("Account password reset could not be committed.");
+        }
+    }
+
     void insert(UUID accountId, String loginName, String passwordHash, Set<AccountAuthority> authorities) {
         jdbc.update("INSERT INTO identity_account(id, login_name, password_hash) VALUES (?, ?, ?)",
                 accountId, loginName, passwordHash);
