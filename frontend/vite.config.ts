@@ -10,6 +10,9 @@ export default defineConfig({
       '/actuator': {
         target: process.env.BACKEND_URL ?? 'http://127.0.0.1:8080',
       },
+      '/api': {
+        target: process.env.BACKEND_URL ?? 'http://127.0.0.1:8080',
+      },
     },
   },
 })

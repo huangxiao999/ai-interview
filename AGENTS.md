@@ -21,7 +21,7 @@
 | 技术方案、TD决策、PF证明计划 | [TECHNICAL_DESIGN](docs/技术方案设计.md)、[TECHNICAL_DECISIONS](docs/技术决策记录.md)、[VERIFICATION_PLAN](docs/实现证明计划.md)；含已确认CF-03/CF-04，技术选择已确认，实施核实与PF/VP待执行，具体范围及状态以正文为准 |
 | 页面参考 | [参考图目录](docs/design-references-v1/)；图中数据和布局不替代业务规则 |
 | 工程环境、启动与基础检查 | [README](README.md)；实际依赖以 backend/pom.xml、Maven Wrapper 和 frontend/package-lock.json 为准，验证边界见 README |
-| 当前环境、首片详细设计与开发任务 | [ENVIRONMENT_VERIFICATION](docs/开发环境调整与基础验证.md)、[FIRST_SLICE_DESIGN](docs/首个业务切片详细设计.md)、[DEVELOPMENT_PLAN](docs/开发计划.md)、[DT01_VERIFICATION](<docs/DT-01 版本化持久化基础：实现与验证记录.md>)、[DT02_VERIFICATION](<docs/DT-02 账号与受控开通：实现与验证记录.md>)、[DT03_VERIFICATION](<docs/DT-03 会话认证与最小API：实现与验证记录.md>)、[DT04_VERIFICATION](<docs/DT-04 重置与会话撤销：实现与验证记录.md>)；DT-01/03/04已完成各自范围，DT-02两项 P2 修复已复审、部分证据待补，完整FS-A及PF/VP状态按证据范围判断 |
+| 当前环境、首片详细设计与开发任务 | [ENVIRONMENT_VERIFICATION](docs/开发环境调整与基础验证.md)、[FIRST_SLICE_DESIGN](docs/首个业务切片详细设计.md)、[DEVELOPMENT_PLAN](docs/开发计划.md)、[DT01_VERIFICATION](<docs/DT-01 版本化持久化基础：实现与验证记录.md>)、[DT02_VERIFICATION](<docs/DT-02 账号与受控开通：实现与验证记录.md>)、[DT03_VERIFICATION](<docs/DT-03 会话认证与最小API：实现与验证记录.md>)、[DT04_VERIFICATION](<docs/DT-04 重置与会话撤销：实现与验证记录.md>)、[DT05_VERIFICATION](<docs/DT-05 最小登录前端：实现与验证记录.md>)；DT-01/03～05已完成各自范围，DT-02两项 P2 修复已复审、部分证据待补，完整FS-A及PF/VP状态按证据范围判断 |
 
 - 区分已确认规则、建模/技术建议、待决项和实施待核实事实；“文档已写完”不代表方案已确认或产品已通过。
 - 后续已确认补充也属于依据，特别检查 CF、DACC、TD、PF 的适用内容；不能只读早期 PRD 而遗漏确认记录。
@@ -112,7 +112,7 @@
 
 ## 10. 工程目录、实际命令与后续补齐
 
-- `backend/` 为 Java 21 / Boot MVC/JDBC 工程，包根 `dev.interviewcoach`；当前有启动入口、`bootstrap` 拒绝访问边界、DT-02账号读取/受控开通、DT-03后端会话认证及DT-04受控重置。产品登录前端尚未实现。后续按 M-01～07 的实际用例增量建立模块包，不批量制造空分层。`frontend/src/` 按 api、router、stores、views、assets 组织；请求走 api，界面状态走 Pinia。
+- `backend/` 为 Java 21 / Boot MVC/JDBC 工程，包根 `dev.interviewcoach`；当前有启动入口、`bootstrap` 拒绝访问边界、DT-02账号读取/受控开通、DT-03后端会话认证及DT-04受控重置。DT-05已有最小登录前端和受保护空工作区。后续按 M-01～07 的实际用例增量建立模块包，不批量制造空分层。`frontend/src/` 按 api、router、stores、views、assets 组织；请求走 api，界面状态走 Pinia。
 - `scripts/Use-LocalTools.ps1` 在项目根执行：`& './scripts/Use-LocalTools.ps1'`。读取当前PATH的完整JDK21并对齐当前终端JAVA_HOME，不再切换到便携Temurin；Node仍可使用项目便携版，保留缓存和短临时目录。不修改系统软件/全局配置，其他机器不硬编码本机JDK路径。
 - 已验证（2026-10-28）：backend下 `./mvnw.cmd '-Dmaven.repo.local=../.cache/maven-repository' -B -ntp verify` 构建及当前6项基础测试通过（4项bootstrap、2项DT-02）；打包默认bootstrap与local启动/健康的既有证据见DT-01，DT-02另有local上下文及交互式开通验证。运行前各终端加载工具脚本，不依赖全局Maven；旧三项记录属于初始化历史。
 - 已验证：在 `frontend/` 执行 `npm.cmd ci --no-audit --no-fund`、`npm.cmd run check`、`npm.cmd run dev`。check 包含静态/格式/类型检查和构建；使用 npm 锁文件，不混用包管理器。前端 5173 经代理连接后端 8080，仅监听本机，实际健康请求成功。
@@ -120,7 +120,8 @@
 - 根目录 `& './scripts/Verify-Persistence.ps1'` 已验证：每次新建独立PG16测试库，运行database-verification profile的6项集成检查并保留日志/manifest/数据库；DB环境变量恢复，不改.env。不能直接在开发库注入失败迁移，也不能用H2替代；禁用隔离条件时应失败而非静默跳过。
 - DT-02两项 P2 修复已完成独立复审，部分证据待补：修复阶段在根目录执行 `& './scripts/Verify-Account.ps1'`，新建并保留隔离PG16测试库，运行6项账号/事务集成检查；默认后端构建与6项基础测试通过。独立复审只读核对，未重跑。登录名按原样区分大小写精确匹配，仅允许3～64位ASCII字母、数字、`.`、`_`、`-`；系统生成随机初始密码，经受控线下渠道交付。受控开通在 Spring 数据库初始化前要求交互控制台、当前 Windows 项目所有者及私有 ACL；新检出目录先构建 JAR，再由所有者检查并执行 `& './scripts/Protect-ProvisioningWorkspace.ps1'`。本地宽权限和非交互拒绝路径经隔离PG16复测，开发库未改；不在终端转录或日志记录明文密码。该约束仅适用于本地维护，不代表生产授权或登录已实现；待补验证及证据见DT02_VERIFICATION。
 - DT-03在根目录执行 `& './scripts/Verify-SessionAuth.ps1'`，每次新建并保留隔离PG16测试库，当前运行9项真实HTTP/Session集成检查及Chrome浏览器Cookie/CSRF检查；证据与未覆盖范围见DT03_VERIFICATION。`local`模式提供后端`csrf/login/me/logout`，30分钟空闲失效，已认证请求重查凭证代次。
-- DT-04在根目录执行 `& './scripts/Verify-PasswordReset.ps1'`，新建并保留隔离PG16测试库，运行6项事务/会话/Chrome检查。交互式受控重置使用 `& './scripts/Reset-TrialAccountPassword.ps1' -AccountId '<账号UUID>'`，须先核查当前所有者、私有ACL及最新JAR；新随机密码只在终端显示一次，经受控线下渠道交付，不转录。实际证据和限制见DT04_VERIFICATION；DT-05产品页面、私有资源隔离及完整FS-A/PF/VP尚未完成。
+- DT-04在根目录执行 `& './scripts/Verify-PasswordReset.ps1'`，新建并保留隔离PG16测试库，运行6项事务/会话/Chrome检查。交互式受控重置使用 `& './scripts/Reset-TrialAccountPassword.ps1' -AccountId '<账号UUID>'`，须先核查当前所有者、私有ACL及最新JAR；新随机密码只在终端显示一次，经受控线下渠道交付，不转录。实际证据和限制见DT04_VERIFICATION。
+- DT-05在根目录执行 `& './scripts/Verify-LoginFrontend.ps1'`，新建并保留隔离PG16测试库，运行6项基础及1项真实Chrome页面集成检查；前端 `frontend/` 下 `npm.cmd run check` 已通过。最小登录、身份核实、受保护空工作区和退出已实现，证据见DT05_VERIFICATION；DT-06多窗口/结果恢复、私有资源隔离及完整FS-A/PF/VP仍待执行。
 - Compose及只读SQL命令见README/DT01_VERIFICATION，保留PG16卷，不执行down -v。infra/postgres中的001仅初始化vector；verify和verify-persistence为只读审计，不自动建业务表。私有文件规划仍为.local-data/private，未实现存储。秘密、用户资料、缓存、日志、备份及产物按忽略规则管理。
 - README 记录环境、详细命令、已执行结果及未验证项；基础测试不是 PF/VP 或 AI 质量验收。后续新增业务时补相关层次验证，不能只提供一条笼统测试命令冒充全部 PF 证明。
 - 修改前检查实际工作区及任务相关约定，保留已有改动；按用户目标实现可验证的小步闭环，功能或契约变化同步对应需求/设计/验收。遇到技术验证失败先修复或说明缺口，不擅自放宽业务规则。
