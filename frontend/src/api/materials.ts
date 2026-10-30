@@ -1,4 +1,4 @@
-import { clearCsrf, csrfHeader } from './auth'
+import { clearCsrf, csrfHeader, getIdentity } from './auth'
 import { ApiError, getJson, request, requireRecord } from './http'
 
 export interface ResumeSummary {
@@ -84,9 +84,31 @@ async function readSuccess<T>(response: Response, parse: (payload: unknown) => T
   return parse(payload)
 }
 
-async function materialWriteRequest(path: string, init: RequestInit): Promise<Response> {
+export interface MaterialWriteOwner {
+  accountId: string
+  isCurrent: () => boolean
+}
+
+async function materialWriteRequest(
+  path: string,
+  init: RequestInit,
+  owner: MaterialWriteOwner,
+): Promise<Response> {
   try {
-    return await request(path, init)
+    let current
+    try {
+      current = await getIdentity()
+    } catch (error: unknown) {
+      if (error instanceof ApiError && error.status === 401) throw error
+      throw new ApiError(409, 'IDENTITY_UNVERIFIED', '暂时无法核实登录身份，请重试')
+    }
+    if (!owner.isCurrent() || current.accountId !== owner.accountId) {
+      throw new ApiError(409, 'ACCOUNT_CHANGED', '登录身份已变化，请核实后操作')
+    }
+    return await request(path, {
+      ...init,
+      headers: { ...init.headers, 'X-Expected-Account-Id': owner.accountId },
+    })
   } catch (error: unknown) {
     if (error instanceof ApiError && error.code === 'CSRF_INVALID') clearCsrf()
     throw error
@@ -113,18 +135,26 @@ export function getCreatedOperation(operationId: string): Promise<ResumeDetail> 
   )
 }
 
-export async function createResume(body: string, operationId: string): Promise<ResumeDetail> {
+export async function createResume(
+  body: string,
+  operationId: string,
+  owner: MaterialWriteOwner,
+): Promise<ResumeDetail> {
   let attempted = false
   try {
-    const response = await materialWriteRequest('/api/materials/resumes', {
-      method: 'POST',
-      headers: {
-        ...(await csrfHeader()),
-        'Content-Type': 'application/json',
-        'X-Operation-Id': operationId,
+    const response = await materialWriteRequest(
+      '/api/materials/resumes',
+      {
+        method: 'POST',
+        headers: {
+          ...(await csrfHeader()),
+          'Content-Type': 'application/json',
+          'X-Operation-Id': operationId,
+        },
+        body: JSON.stringify({ body }),
       },
-      body: JSON.stringify({ body }),
-    })
+      owner,
+    )
     attempted = true
     return await readSuccess(response, parseDetail)
   } catch (error: unknown) {
@@ -156,7 +186,10 @@ export function getDeletion(resumeId: string): Promise<DeletionStatus> {
   return getJson(`/api/materials/resumes/${encodeURIComponent(resumeId)}/deletion`, parseDeletion)
 }
 
-export async function deleteResume(resumeId: string): Promise<DeletionStatus> {
+export async function deleteResume(
+  resumeId: string,
+  owner: MaterialWriteOwner,
+): Promise<DeletionStatus> {
   try {
     const response = await materialWriteRequest(
       `/api/materials/resumes/${encodeURIComponent(resumeId)}`,
@@ -164,6 +197,7 @@ export async function deleteResume(resumeId: string): Promise<DeletionStatus> {
         method: 'DELETE',
         headers: await csrfHeader(),
       },
+      owner,
     )
     return await readSuccess(response, parseDeletion)
   } catch (error: unknown) {

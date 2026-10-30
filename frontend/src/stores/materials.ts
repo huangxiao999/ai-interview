@@ -14,10 +14,25 @@ export const useMaterialsStore = defineStore('materials', () => {
   const confirmDeleteId = ref<string | null>(null)
   const deleteVersionCount = ref(0)
   const generation = ref(0)
+  const listRequestId = ref(0)
   const ownerAccountId = ref<string | null>(null)
+
+  function invalidateListRequests(): void {
+    listRequestId.value += 1
+  }
+
+  function beginListRequest(): number {
+    invalidateListRequests()
+    return listRequestId.value
+  }
+
+  function isLatestListRequest(requestId: number): boolean {
+    return requestId === listRequestId.value
+  }
 
   function clearPrivate(): void {
     generation.value += 1
+    invalidateListRequests()
     draft.value = ''
     items.value = []
     selected.value = null
@@ -54,6 +69,9 @@ export const useMaterialsStore = defineStore('materials', () => {
     confirmDeleteId,
     deleteVersionCount,
     generation,
+    invalidateListRequests,
+    beginListRequest,
+    isLatestListRequest,
     syncIdentity,
   }
 })

@@ -43,7 +43,13 @@ watch(
 )
 
 function showError(error: unknown): void {
-  if (error instanceof ApiError && (error.status === 401 || error.code === 'CSRF_INVALID')) {
+  if (
+    error instanceof ApiError &&
+    (error.status === 401 ||
+      error.code === 'CSRF_INVALID' ||
+      error.code === 'ACCOUNT_CHANGED' ||
+      error.code === 'IDENTITY_UNVERIFIED')
+  ) {
     void session.refreshIdentity()
   }
   materialsMessage.value =
@@ -51,11 +57,14 @@ function showError(error: unknown): void {
 }
 
 async function loadItems(generation = materials.generation): Promise<void> {
+  const requestId = materials.beginListRequest()
   try {
     const loaded = await listResumes()
-    if (generation === materials.generation) items.value = loaded
+    if (generation === materials.generation && materials.isLatestListRequest(requestId))
+      items.value = loaded
   } catch (error: unknown) {
-    if (generation === materials.generation) showError(error)
+    if (generation === materials.generation && materials.isLatestListRequest(requestId))
+      showError(error)
   }
 }
 
@@ -64,10 +73,19 @@ async function saveDraft(): Promise<void> {
   if (!pendingOperation.value) pendingOperation.value = crypto.randomUUID()
   const operationId = pendingOperation.value
   const generation = materials.generation
+  const accountId = identity.value?.accountId
+  if (!accountId) return
   materialsBusy.value = true
+  materials.invalidateListRequests()
   materialsMessage.value = ''
   try {
-    const detail = await createResume(draft.value, operationId)
+    const detail = await createResume(draft.value, operationId, {
+      accountId,
+      isCurrent: () =>
+        generation === materials.generation &&
+        status.value === 'authenticated' &&
+        identity.value?.accountId === accountId,
+    })
     if (generation !== materials.generation) return
     pendingOperation.value = null
     draft.value = ''
@@ -89,6 +107,7 @@ async function verifySave(): Promise<void> {
   if (!pendingOperation.value || materialsBusy.value) return
   const generation = materials.generation
   materialsBusy.value = true
+  materials.invalidateListRequests()
   try {
     const detail = await getCreatedOperation(pendingOperation.value)
     if (generation !== materials.generation) return
@@ -144,10 +163,19 @@ async function confirmDelete(): Promise<void> {
   const resumeId = confirmDeleteId.value
   if (!resumeId || materialsBusy.value) return
   const generation = materials.generation
+  const accountId = identity.value?.accountId
+  if (!accountId) return
   materialsBusy.value = true
+  materials.invalidateListRequests()
   pendingDelete.value = resumeId
   try {
-    const result = await deleteResume(resumeId)
+    const result = await deleteResume(resumeId, {
+      accountId,
+      isCurrent: () =>
+        generation === materials.generation &&
+        status.value === 'authenticated' &&
+        identity.value?.accountId === accountId,
+    })
     if (generation !== materials.generation) return
     confirmDeleteId.value = null
     pendingDelete.value = null
@@ -167,6 +195,7 @@ async function verifyDelete(): Promise<void> {
   if (!resumeId || materialsBusy.value) return
   const generation = materials.generation
   materialsBusy.value = true
+  materials.invalidateListRequests()
   try {
     const result = await getDeletion(resumeId)
     if (generation !== materials.generation) return
