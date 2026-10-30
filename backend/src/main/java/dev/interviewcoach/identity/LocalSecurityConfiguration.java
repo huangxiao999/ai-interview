@@ -35,6 +35,7 @@ class LocalSecurityConfiguration {
                         "/actuator/health/readiness", "/api/auth/csrf").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/auth/me").authenticated()
                 .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
+                .requestMatchers("/api/materials/**").authenticated()
                 .anyRequest().denyAll());
         http.exceptionHandling(exceptions -> exceptions
                 .authenticationEntryPoint((request, response, ex) -> JsonSecurityResponses.write(response,

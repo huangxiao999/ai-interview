@@ -154,10 +154,10 @@ try {
   assert.equal(await evaluate(`document.body.innerText.includes('正在登录')`), true)
   await send('Fetch.continueRequest', { requestId: pausedLogin.requestId }, pausedLogin.sessionId)
   await send('Fetch.disable', {}, sessionId)
-  await waitUntil(`location.pathname === '/app' && document.body.innerText.includes('已登录')`, 'authenticated workspace')
+  await waitUntil(`location.pathname === '/app' && document.body.innerText.includes('我的简历')`, 'authenticated workspace')
   assert.equal(await evaluate(`document.body.innerText.includes(${JSON.stringify(username)})`), true)
   assert.equal(await evaluate(`document.cookie.includes('SESSION=')`), false)
-  assert.equal(await evaluate(`document.body.innerText.includes('尚未开发')`), true)
+  assert.equal(await evaluate(`document.body.innerText.includes('岗位 JD')`), true)
   const afterLoginCsrf = await evaluate(`(async () => (await (await fetch('/api/auth/csrf')).json()).token)()`)
   assert.notEqual(afterLoginCsrf, beforeLoginCsrf)
   assert.equal(
@@ -172,7 +172,7 @@ try {
   await pausedAction
   await send('Fetch.disable', {}, sessionId)
   await evaluate(`document.querySelector('button').click()`)
-  await waitUntil(`document.body.innerText.includes('已登录')`, 'identity retry')
+  await waitUntil(`document.body.innerText.includes('我的简历')`, 'identity retry')
 
   await evaluate(`Array.from(document.querySelectorAll('button')).find(button => button.textContent.includes('退出登录')).click()`)
   await waitUntil(`location.pathname === '/login' && !!document.querySelector('#login-name')`, 'logout redirect')
