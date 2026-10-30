@@ -1,0 +1,140 @@
+package dev.interviewcoach.material;
+
+import dev.interviewcoach.identity.AccountAuthority;
+import dev.interviewcoach.identity.Actor;
+import java.util.List;
+import java.util.UUID;
+import org.springframework.context.annotation.Profile;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+
+@Service
+@Profile("!bootstrap")
+final class ResumeService {
+
+    private final ResumeRepository repository;
+    private final TransactionTemplate transaction;
+
+    ResumeService(ResumeRepository repository, PlatformTransactionManager manager) {
+        this.repository = repository;
+        this.transaction = new TransactionTemplate(manager);
+    }
+
+    ResumeRepository.Detail create(Actor actor, UUID operationId, String rawBody) {
+        requireTrial(actor);
+        ResumeText.Normalized body = ResumeText.normalize(rawBody);
+        return transaction.execute(status -> {
+            repository.lockOwner(actor.accountId());
+            var previous = repository.findByCreateOperation(actor.accountId(), operationId);
+            if (previous.isPresent()) {
+                var detail = repository.detail(actor.accountId(), previous.get().id(), null)
+                        .orElseThrow(MaterialUnavailable::new);
+                assertSameOperationBody(detail, body);
+                return detail;
+            }
+            UUID resumeId = UUID.randomUUID();
+            repository.insertRoot(resumeId, actor.accountId(), operationId);
+            repository.insertVersion(UUID.randomUUID(), resumeId, 1, operationId, body);
+            return repository.detail(actor.accountId(), resumeId, null)
+                    .orElseThrow(IllegalStateException::new);
+        });
+    }
+
+    ResumeRepository.Detail addVersion(Actor actor, UUID resumeId, UUID operationId, String rawBody) {
+        requireTrial(actor);
+        ResumeText.Normalized body = ResumeText.normalize(rawBody);
+        return transaction.execute(status -> {
+            repository.lockOwner(actor.accountId());
+            requireActiveRoot(actor, resumeId);
+            var previous = repository.detailByOperation(actor.accountId(), resumeId, operationId);
+            if (previous.isPresent()) {
+                assertSameOperationBody(previous.get(), body);
+                return previous.get();
+            }
+            repository.insertVersion(UUID.randomUUID(), resumeId, repository.nextVersion(resumeId),
+                    operationId, body);
+            return repository.detailByOperation(actor.accountId(), resumeId, operationId)
+                    .orElseThrow(IllegalStateException::new);
+        });
+    }
+
+    List<ResumeRepository.Summary> list(Actor actor) {
+        requireTrial(actor);
+        return repository.list(actor.accountId());
+    }
+
+    ResumeRepository.Detail detail(Actor actor, UUID resumeId, UUID versionId) {
+        requireTrial(actor);
+        return repository.detail(actor.accountId(), resumeId, versionId)
+                .orElseThrow(MaterialUnavailable::new);
+    }
+
+    ResumeRepository.Detail createdByOperation(Actor actor, UUID operationId) {
+        requireTrial(actor);
+        var root = repository.findByCreateOperation(actor.accountId(), operationId)
+                .orElseThrow(MaterialUnavailable::new);
+        return detail(actor, root.id(), null);
+    }
+
+    ResumeRepository.Detail versionByOperation(Actor actor, UUID resumeId, UUID operationId) {
+        requireTrial(actor);
+        return repository.detailByOperation(actor.accountId(), resumeId, operationId)
+                .orElseThrow(MaterialUnavailable::new);
+    }
+
+    int deletionImpact(Actor actor, UUID resumeId) {
+        requireTrial(actor);
+        requireActiveRoot(actor, resumeId);
+        return repository.countVersions(resumeId);
+    }
+
+    ResumeRepository.Deletion delete(Actor actor, UUID resumeId) {
+        requireTrial(actor);
+        return transaction.execute(status -> {
+            repository.lockOwner(actor.accountId());
+            var root = repository.lockRoot(resumeId).orElseThrow(MaterialUnavailable::new);
+            if (!root.ownerId().equals(actor.accountId())) {
+                throw new MaterialUnavailable();
+            }
+            if (root.state().equals("DELETED")) {
+                return repository.deletion(actor.accountId(), resumeId)
+                        .orElseThrow(IllegalStateException::new);
+            }
+            UUID requestId = UUID.randomUUID();
+            var now = repository.databaseTime();
+            repository.recordDeletion(requestId, resumeId, now, repository.versionIds(resumeId));
+            return repository.deletion(actor.accountId(), resumeId)
+                    .orElseThrow(IllegalStateException::new);
+        });
+    }
+
+    ResumeRepository.Deletion deletion(Actor actor, UUID resumeId) {
+        requireTrial(actor);
+        return repository.deletion(actor.accountId(), resumeId)
+                .orElseThrow(MaterialUnavailable::new);
+    }
+
+    private void requireActiveRoot(Actor actor, UUID resumeId) {
+        var root = repository.lockRoot(resumeId).orElseThrow(MaterialUnavailable::new);
+        if (!root.ownerId().equals(actor.accountId()) || !root.state().equals("ACTIVE")) {
+            throw new MaterialUnavailable();
+        }
+    }
+
+    private void requireTrial(Actor actor) {
+        if (!actor.hasAuthority(AccountAuthority.TRIAL_USER)) {
+            throw new AccessDeniedException("Trial-user authority is required.");
+        }
+    }
+
+    private void assertSameOperationBody(ResumeRepository.Detail previous, ResumeText.Normalized body) {
+        if (!previous.body().equals(body.body())) {
+            throw new MaterialConflict();
+        }
+    }
+}
+
+final class MaterialConflict extends RuntimeException {
+}

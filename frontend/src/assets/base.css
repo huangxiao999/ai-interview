@@ -194,6 +194,48 @@ button:focus-visible,
   font-weight: 600;
 }
 
+.material-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: 28px;
+  margin-top: 24px;
+}
+
+.material-grid textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  padding: 12px;
+  border: 1px solid #b7cbc6;
+  border-radius: 6px;
+}
+
+.material-grid button,
+.material-delete button {
+  margin: 4px 8px 4px 0;
+}
+
+.material-list {
+  padding-left: 20px;
+}
+
+.material-list li {
+  margin: 10px 0;
+}
+
+.material-detail,
+.material-delete {
+  border-top: 1px solid #dce6e3;
+  margin-top: 28px;
+  padding-top: 18px;
+}
+
+.material-detail pre {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font: inherit;
+}
+
 @media (max-width: 540px) {
   .auth-card,
   .workspace-panel {

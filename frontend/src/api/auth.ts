@@ -56,6 +56,11 @@ async function csrf(): Promise<CsrfToken> {
   return currentCsrf
 }
 
+export async function csrfHeader(): Promise<Record<string, string>> {
+  const token = await csrf()
+  return { [token.headerName]: token.token }
+}
+
 export async function submitLogin(loginName: string, password: string): Promise<Identity> {
   const token = await csrf()
   try {
