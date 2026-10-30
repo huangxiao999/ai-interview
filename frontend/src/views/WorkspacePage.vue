@@ -70,6 +70,7 @@ async function loadItems(generation = materials.generation): Promise<void> {
 
 async function saveDraft(): Promise<void> {
   if (materialsBusy.value || status.value !== 'authenticated') return
+  const retryingUnresolvedOperation = pendingOperation.value !== null
   if (!pendingOperation.value) pendingOperation.value = crypto.randomUUID()
   const operationId = pendingOperation.value
   const generation = materials.generation
@@ -94,7 +95,11 @@ async function saveDraft(): Promise<void> {
     await loadItems(generation)
   } catch (error: unknown) {
     if (generation === materials.generation) {
-      if (!(error instanceof ApiError) || error.code !== 'RESULT_UNKNOWN')
+      // A preflight rejection says nothing about an earlier submission of this operation.
+      if (
+        !retryingUnresolvedOperation &&
+        (!(error instanceof ApiError) || error.code !== 'RESULT_UNKNOWN')
+      )
         pendingOperation.value = null
       showError(error)
     }

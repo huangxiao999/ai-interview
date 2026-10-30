@@ -108,13 +108,18 @@ try {
     const nativeFetch = window.fetch.bind(window)
     window.p2Hooks = { holdMe: false, releaseMe: null, holdNextList: false,
       releaseList: null, listReleaseApplied: false, failPostBody: false,
-      failLookup: false, invalidateNextPost: false, invalidateNextDelete: false,
+      failLookup: false, failNextMe: false,
+      invalidateNextPost: false, invalidateNextDelete: false,
       meCalls: 0, csrfCalls: 0,
       postOperations: [] }
     window.fetch = async (input, init) => {
       const pathname = new URL(input instanceof Request ? input.url : input, location.href).pathname
       if (pathname === '/api/auth/me') window.p2Hooks.meCalls += 1
       if (pathname === '/api/auth/csrf') window.p2Hooks.csrfCalls += 1
+      if (pathname === '/api/auth/me' && window.p2Hooks.failNextMe) {
+        window.p2Hooks.failNextMe = false
+        throw new TypeError('synthetic identity precheck interruption')
+      }
       if (pathname === '/api/auth/me' && window.p2Hooks.holdMe) {
         return new Promise(resolve => {
           window.p2Hooks.releaseMe = () => nativeFetch(input, init).then(resolve)
@@ -238,6 +243,20 @@ try {
   })()`)
   await waitUntil(`document.body.innerText.includes('暂时无法确认是否保存')`, 'unknown save result')
   assert.equal(await evaluate(`window.p2Hooks.postOperations.length`), 2)
+  const pendingOperationBeforePrecheck = await evaluate(`window.p2Hooks.postOperations[1]`)
+  await evaluate(`(() => {
+    window.p2Hooks.failNextMe = true
+    Array.from(document.querySelectorAll('button'))
+      .find(button => button.textContent.includes('沿用原操作重试')).click()
+  })()`)
+  await waitUntil(`window.p2Hooks.meCalls > 0
+    && document.body.innerText.includes('暂时无法核实登录身份')
+    && !!document.querySelector('#resume-body')`, 'identity precheck failure and recovery')
+  assert.equal(await evaluate(`window.p2Hooks.postOperations.length`), 2,
+    'failed identity precheck must not issue another save')
+  assert.equal(await evaluate(`!!Array.from(document.querySelectorAll('button'))
+    .find(button => button.textContent.includes('沿用原操作重试'))`), true,
+  'unresolved original save must remain available after identity recovery')
   await evaluate(`(() => {
     window.p2Hooks.releaseMe = null
     window.p2Hooks.holdMe = true
@@ -257,6 +276,7 @@ try {
     && document.querySelectorAll('.material-list li').length === ${beforeUnknownCount + 1}`,
     'same operation retry')
   assert.equal(await evaluate(`window.p2Hooks.postOperations.length`), 3)
+  assert.equal(await evaluate(`window.p2Hooks.postOperations[2]`), pendingOperationBeforePrecheck)
   assert.equal(await evaluate(`window.p2Hooks.postOperations[1] === window.p2Hooks.postOperations[2]`), true)
   await evaluate(`Array.from(document.querySelectorAll('.material-list li:first-child button'))
     .find(button => button.textContent.includes('删除整份')).click()`)
