@@ -46,7 +46,15 @@ try {
     Set-Location (Join-Path $projectRoot 'backend')
     ./mvnw.cmd '-Dmaven.repo.local=../.cache/maven-repository' -B -ntp -Pdatabase-verification '-Dit.test=IdentityRepositoryIT' verify *> $logPath
     $verificationExit = $LASTEXITCODE
-    $manifest['status'] = if ($verificationExit -eq 0) { 'passed' } else { 'failed' }
+    $reportPath = 'target/failsafe-reports/TEST-dev.interviewcoach.identity.IdentityRepositoryIT.xml'
+    if (Test-Path -LiteralPath $reportPath) {
+        [xml] $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8
+        $manifest['testsRun'] = [int] $report.testsuite.tests
+        $manifest['testsSkipped'] = [int] $report.testsuite.skipped
+    }
+    $manifest['status'] = if ($verificationExit -ne 0) { 'failed' }
+        elseif ($manifest.ContainsKey('testsSkipped') -and $manifest['testsSkipped'] -gt 0) { 'passed-with-skips' }
+        else { 'passed' }
     $manifest['exitCode'] = $verificationExit
     $manifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding UTF8
     $manifest | ConvertTo-Json | Set-Content -LiteralPath '../.cache/dt02-test-run.json' -Encoding UTF8
