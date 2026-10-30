@@ -40,11 +40,21 @@ if ($alreadyPrivate) {
 $cache = Join-Path $projectRoot '.cache'
 New-Item -ItemType Directory -Path $cache -Force | Out-Null
 $backup = Join-Path $cache ('dt02-root-acl-before-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.sddl')
-Set-Content -LiteralPath $backup -Value $current.Sddl -Encoding UTF8
+$rootDirectory = [System.IO.DirectoryInfo]::new($projectRoot)
+# Only update the DACL. Passing the full descriptor to Set-Acl also writes the
+# inherited audit SACL, which requires SeSecurityPrivilege on some Windows hosts.
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    $accessOnly = $rootDirectory.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)
+}
+else {
+    $accessOnly = [System.IO.FileSystemAclExtensions]::GetAccessControl(
+        $rootDirectory, [Security.AccessControl.AccessControlSections]::Access)
+}
+Set-Content -LiteralPath $backup -Value $accessOnly.Sddl -Encoding UTF8
 
-$current.SetAccessRuleProtection($true, $false)
-foreach ($entry in @($current.Access)) {
-    $current.RemoveAccessRuleSpecific($entry) | Out-Null
+$accessOnly.SetAccessRuleProtection($true, $false)
+foreach ($entry in @($accessOnly.Access)) {
+    $accessOnly.RemoveAccessRuleSpecific($entry) | Out-Null
 }
 $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
     [Security.AccessControl.InheritanceFlags]::ObjectInherit
@@ -55,9 +65,14 @@ foreach ($principal in @($operator.User,
         [Security.AccessControl.FileSystemRights]::FullControl, $inheritance,
         [Security.AccessControl.PropagationFlags]::None,
         [Security.AccessControl.AccessControlType]::Allow)
-    $current.AddAccessRule($rule)
+    $accessOnly.AddAccessRule($rule)
 }
-Set-Acl -LiteralPath $projectRoot -AclObject $current
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    $rootDirectory.SetAccessControl($accessOnly)
+}
+else {
+    [System.IO.FileSystemAclExtensions]::SetAccessControl($rootDirectory, $accessOnly)
+}
 
 foreach ($path in $checkedPaths) {
     $acl = Get-Acl -LiteralPath (Join-Path $projectRoot $path)
