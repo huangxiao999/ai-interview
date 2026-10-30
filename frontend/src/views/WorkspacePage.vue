@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session'
+import { useMaterialsStore } from '../stores/materials'
 import { ApiError } from '../api/http'
 import {
   createResume,
@@ -12,57 +13,49 @@ import {
   getDeletion,
   getResume,
   listResumes,
-  type ResumeDetail,
-  type ResumeSummary,
 } from '../api/materials'
 
 const router = useRouter()
 const session = useSessionStore()
 const { status, identity, message, busy } = storeToRefs(session)
-const draft = ref('')
-const items = ref<ResumeSummary[]>([])
-const selected = ref<ResumeDetail | null>(null)
-const materialsBusy = ref(false)
-const materialsMessage = ref('')
-const pendingOperation = ref<string | null>(null)
-const pendingDelete = ref<string | null>(null)
-const confirmDeleteId = ref<string | null>(null)
-const deleteVersionCount = ref(0)
-let dataGeneration = 0
+const materials = useMaterialsStore()
+const {
+  draft,
+  items,
+  selected,
+  materialsBusy,
+  materialsMessage,
+  pendingOperation,
+  pendingDelete,
+  confirmDeleteId,
+  deleteVersionCount,
+} = storeToRefs(materials)
 
 watch(
-  () => `${status.value}:${identity.value?.accountId ?? ''}`,
+  () => [status.value, identity.value?.accountId] as const,
   () => {
-    // Another tab may switch accounts while a private read is still in flight.
-    const generation = ++dataGeneration
-    draft.value = ''
-    items.value = []
-    selected.value = null
-    pendingOperation.value = null
-    pendingDelete.value = null
-    confirmDeleteId.value = null
-    materialsMessage.value = ''
-    if (status.value === 'authenticated' && identity.value?.authorities.includes('TRIAL_USER')) {
-      void loadItems(generation)
+    const ownerChanged = materials.syncIdentity(status.value, identity.value)
+    if (ownerChanged && identity.value?.authorities.includes('TRIAL_USER')) {
+      void loadItems(materials.generation)
     }
   },
   { immediate: true },
 )
 
 function showError(error: unknown): void {
-  if (error instanceof ApiError && error.status === 401) {
+  if (error instanceof ApiError && (error.status === 401 || error.code === 'CSRF_INVALID')) {
     void session.refreshIdentity()
   }
   materialsMessage.value =
     error instanceof ApiError ? error.message : '资料操作暂时无法完成，请重试'
 }
 
-async function loadItems(generation = dataGeneration): Promise<void> {
+async function loadItems(generation = materials.generation): Promise<void> {
   try {
     const loaded = await listResumes()
-    if (generation === dataGeneration) items.value = loaded
+    if (generation === materials.generation) items.value = loaded
   } catch (error: unknown) {
-    if (generation === dataGeneration) showError(error)
+    if (generation === materials.generation) showError(error)
   }
 }
 
@@ -70,92 +63,92 @@ async function saveDraft(): Promise<void> {
   if (materialsBusy.value || status.value !== 'authenticated') return
   if (!pendingOperation.value) pendingOperation.value = crypto.randomUUID()
   const operationId = pendingOperation.value
-  const generation = dataGeneration
+  const generation = materials.generation
   materialsBusy.value = true
   materialsMessage.value = ''
   try {
     const detail = await createResume(draft.value, operationId)
-    if (generation !== dataGeneration) return
+    if (generation !== materials.generation) return
     pendingOperation.value = null
     draft.value = ''
     selected.value = detail
     materialsMessage.value = '简历正文已保存为第 1 版。岗位 JD 将在后续任务中开放。'
     await loadItems(generation)
   } catch (error: unknown) {
-    if (generation === dataGeneration) {
+    if (generation === materials.generation) {
       if (!(error instanceof ApiError) || error.code !== 'RESULT_UNKNOWN')
         pendingOperation.value = null
       showError(error)
     }
   } finally {
-    materialsBusy.value = false
+    if (generation === materials.generation) materialsBusy.value = false
   }
 }
 
 async function verifySave(): Promise<void> {
   if (!pendingOperation.value || materialsBusy.value) return
-  const generation = dataGeneration
+  const generation = materials.generation
   materialsBusy.value = true
   try {
     const detail = await getCreatedOperation(pendingOperation.value)
-    if (generation !== dataGeneration) return
+    if (generation !== materials.generation) return
     selected.value = detail
     draft.value = ''
     pendingOperation.value = null
     materialsMessage.value = '已核实原保存操作成功。'
     await loadItems(generation)
   } catch (error: unknown) {
-    if (generation === dataGeneration) {
+    if (generation === materials.generation) {
       materialsMessage.value =
         error instanceof ApiError && error.status === 404
           ? '尚未查到原操作结果；可用同一操作标识重试保存。'
           : '暂时无法核实原操作，请稍后重试。'
     }
   } finally {
-    materialsBusy.value = false
+    if (generation === materials.generation) materialsBusy.value = false
   }
 }
 
 async function openResume(resumeId: string): Promise<void> {
   if (materialsBusy.value) return
-  const generation = dataGeneration
+  const generation = materials.generation
   materialsBusy.value = true
   materialsMessage.value = ''
   try {
     const detail = await getResume(resumeId)
-    if (generation === dataGeneration) selected.value = detail
+    if (generation === materials.generation) selected.value = detail
   } catch (error: unknown) {
-    if (generation === dataGeneration) showError(error)
+    if (generation === materials.generation) showError(error)
   } finally {
-    materialsBusy.value = false
+    if (generation === materials.generation) materialsBusy.value = false
   }
 }
 
 async function prepareDelete(resumeId: string): Promise<void> {
   if (materialsBusy.value) return
-  const generation = dataGeneration
+  const generation = materials.generation
   materialsBusy.value = true
   try {
     const impact = await deletionImpact(resumeId)
-    if (generation !== dataGeneration) return
+    if (generation !== materials.generation) return
     confirmDeleteId.value = resumeId
     deleteVersionCount.value = impact.versionCount
   } catch (error: unknown) {
-    if (generation === dataGeneration) showError(error)
+    if (generation === materials.generation) showError(error)
   } finally {
-    materialsBusy.value = false
+    if (generation === materials.generation) materialsBusy.value = false
   }
 }
 
 async function confirmDelete(): Promise<void> {
   const resumeId = confirmDeleteId.value
   if (!resumeId || materialsBusy.value) return
-  const generation = dataGeneration
+  const generation = materials.generation
   materialsBusy.value = true
   pendingDelete.value = resumeId
   try {
     const result = await deleteResume(resumeId)
-    if (generation !== dataGeneration) return
+    if (generation !== materials.generation) return
     confirmDeleteId.value = null
     pendingDelete.value = null
     selected.value = null
@@ -163,34 +156,34 @@ async function confirmDelete(): Promise<void> {
       result.state === 'CLEANED' ? '简历及当前正文已删除。' : '删除已受理，资料已禁访。'
     await loadItems(generation)
   } catch (error: unknown) {
-    if (generation === dataGeneration) showError(error)
+    if (generation === materials.generation) showError(error)
   } finally {
-    materialsBusy.value = false
+    if (generation === materials.generation) materialsBusy.value = false
   }
 }
 
 async function verifyDelete(): Promise<void> {
   const resumeId = pendingDelete.value
   if (!resumeId || materialsBusy.value) return
-  const generation = dataGeneration
+  const generation = materials.generation
   materialsBusy.value = true
   try {
     const result = await getDeletion(resumeId)
-    if (generation !== dataGeneration) return
+    if (generation !== materials.generation) return
     pendingDelete.value = null
     confirmDeleteId.value = null
     selected.value = null
     materialsMessage.value = `已核实删除状态：${result.state === 'CLEANED' ? '当前正文已清理' : '资料已禁访'}`
-    await loadItems()
+    await loadItems(generation)
   } catch (error: unknown) {
-    if (generation === dataGeneration) {
+    if (generation === materials.generation) {
       materialsMessage.value =
         error instanceof ApiError && error.status === 404
           ? '未查到删除受理结果，可重新提交删除确认。'
           : '暂时无法核实删除状态，请稍后重试。'
     }
   } finally {
-    materialsBusy.value = false
+    if (generation === materials.generation) materialsBusy.value = false
   }
 }
 

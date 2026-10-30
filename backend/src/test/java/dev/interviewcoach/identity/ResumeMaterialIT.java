@@ -13,6 +13,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.sql.DriverManager;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -183,8 +184,30 @@ class ResumeMaterialIT {
         assertThat(json(user.get(basePath + "/versions/" + firstVersion)).get("body"))
                 .isEqualTo("v".repeat(100));
         assertThat(json(user.get(basePath)).get("body")).isEqualTo("n".repeat(120));
+        Map<String, Object> replayed = json(user.create("v".repeat(100), createOperation));
+        assertThat(replayed.get("versionId"))
+                .isEqualTo(firstVersion.toString());
+        assertThat(replayed.get("body")).isEqualTo("v".repeat(100));
+        Map<String, Object> original = json(user.get("/api/materials/resumes/operations/"
+                + createOperation));
+        assertThat(original.get("versionId")).isEqualTo(firstVersion.toString());
+        assertThat(original.get("body")).isEqualTo("v".repeat(100));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM material_resume_version WHERE resume_id = ?",
                 Integer.class, root)).isEqualTo(2);
+    }
+
+    @Test
+    void removedSessionRejectsStaleCsrfBeforeMaterialWriteAndFreshLoginCanSave() throws Exception {
+        Account owner = insertAccount(Set.of(AccountAuthority.TRIAL_USER));
+        Client expired = new Client(owner);
+        assertThat(jdbc.update("DELETE FROM spring_session "
+                + "WHERE principal_name = ?", owner.id().toString())).isEqualTo(1);
+        assertThat(expired.create("s".repeat(100), UUID.randomUUID()).statusCode()).isEqualTo(403);
+        assertThat(expired.get("/api/auth/me").statusCode()).isEqualTo(401);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM material_resume WHERE owner_account_id = ?",
+                Integer.class, owner.id())).isZero();
+        Client renewed = new Client(owner);
+        assertThat(renewed.create("s".repeat(100), UUID.randomUUID()).statusCode()).isEqualTo(201);
     }
 
     @Test
@@ -283,6 +306,71 @@ class ResumeMaterialIT {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM material_cleanup_item i "
                 + "JOIN material_delete_request d ON d.id = i.delete_request_id "
                 + "WHERE d.resume_id = ?", Integer.class, root)).isBetween(1, 2);
+    }
+
+    @Test
+    void resetCommittedBeforeOldWriteGetsAccountLockRejectsCreateAppendAndDelete() throws Exception {
+        Account createOwner = insertAccount(Set.of(AccountAuthority.TRIAL_USER));
+        Client createClient = new Client(createOwner);
+        assertLateWriteRevoked(createOwner, () -> createClient.create("c".repeat(100), UUID.randomUUID()));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM material_resume WHERE owner_account_id = ?",
+                Integer.class, createOwner.id())).isZero();
+
+        Account appendOwner = insertAccount(Set.of(AccountAuthority.TRIAL_USER));
+        Client appendClient = new Client(appendOwner);
+        UUID appendRoot = UUID.fromString((String) json(appendClient.create("a".repeat(100),
+                UUID.randomUUID())).get("resumeId"));
+        assertLateWriteRevoked(appendOwner, () -> appendClient.addVersion(appendRoot,
+                "b".repeat(100), UUID.randomUUID()));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM material_resume_version WHERE resume_id = ?",
+                Integer.class, appendRoot)).isEqualTo(1);
+
+        Account deleteOwner = insertAccount(Set.of(AccountAuthority.TRIAL_USER));
+        Client deleteClient = new Client(deleteOwner);
+        UUID deleteRoot = UUID.fromString((String) json(deleteClient.create("d".repeat(100),
+                UUID.randomUUID())).get("resumeId"));
+        assertLateWriteRevoked(deleteOwner, () -> deleteClient.delete(deleteRoot, true));
+        assertThat(jdbc.queryForObject("SELECT state FROM material_resume WHERE id = ?",
+                String.class, deleteRoot)).isEqualTo("ACTIVE");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM material_resume_version WHERE resume_id = ?",
+                Integer.class, deleteRoot)).isEqualTo(1);
+    }
+
+    private static void assertLateWriteRevoked(Account owner, MaterialWrite write) throws Exception {
+        String url = System.getenv("DB_URL") + "?currentSchema=app";
+        try (var locked = DriverManager.getConnection(url, System.getenv("DB_USERNAME"),
+                System.getenv("DB_PASSWORD")); var executor = Executors.newFixedThreadPool(2)) {
+            locked.setAutoCommit(false);
+            try (var statement = locked.prepareStatement(
+                    "SELECT id FROM identity_account WHERE id = ? FOR UPDATE")) {
+                statement.setObject(1, owner.id());
+                assertThat(statement.executeQuery().next()).isTrue();
+            }
+            var reset = executor.submit(() -> context.getBean(TrialAccountPasswordResetter.class)
+                    .reset(owner.id()));
+            awaitAccountLockWaiters(1);
+            var oldWrite = executor.submit(() -> write.send().statusCode());
+            awaitAccountLockWaiters(2);
+            locked.commit();
+            assertThat(reset.get(30, TimeUnit.SECONDS).credentialVersion()).isEqualTo(2);
+            assertThat(oldWrite.get(30, TimeUnit.SECONDS)).isEqualTo(401);
+        }
+    }
+
+    private static void awaitAccountLockWaiters(int expected) throws Exception {
+        for (int attempt = 0; attempt < 150; attempt++) {
+            Integer waiting = jdbc.queryForObject("SELECT count(*) FROM pg_stat_activity "
+                    + "WHERE datname = current_database() AND wait_event_type = 'Lock' "
+                    + "AND query LIKE '%identity_account%FOR UPDATE%'", Integer.class);
+            if (waiting != null && waiting >= expected) return;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("Timed out waiting for account-row lock contention.");
+    }
+
+    @FunctionalInterface
+    private interface MaterialWrite {
+        HttpResponse<String> send() throws Exception;
     }
 
     private static Map<String, Object> json(HttpResponse<String> response) {

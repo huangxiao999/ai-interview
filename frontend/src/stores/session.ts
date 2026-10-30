@@ -9,6 +9,7 @@ import {
   submitLogout,
   type Identity,
 } from '../api/auth'
+export type { Identity } from '../api/auth'
 
 export type SessionStatus = 'checking' | 'anonymous' | 'authenticated' | 'uncertain'
 

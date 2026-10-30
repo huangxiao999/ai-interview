@@ -1,6 +1,7 @@
 package dev.interviewcoach.material;
 
 import dev.interviewcoach.identity.AccountAuthority;
+import dev.interviewcoach.identity.AccountWriteGuard;
 import dev.interviewcoach.identity.Actor;
 import java.util.List;
 import java.util.UUID;
@@ -15,10 +16,13 @@ import org.springframework.transaction.support.TransactionTemplate;
 final class ResumeService {
 
     private final ResumeRepository repository;
+    private final AccountWriteGuard accountWriteGuard;
     private final TransactionTemplate transaction;
 
-    ResumeService(ResumeRepository repository, PlatformTransactionManager manager) {
+    ResumeService(ResumeRepository repository, AccountWriteGuard accountWriteGuard,
+            PlatformTransactionManager manager) {
         this.repository = repository;
+        this.accountWriteGuard = accountWriteGuard;
         this.transaction = new TransactionTemplate(manager);
     }
 
@@ -26,10 +30,10 @@ final class ResumeService {
         requireTrial(actor);
         ResumeText.Normalized body = ResumeText.normalize(rawBody);
         return transaction.execute(status -> {
-            repository.lockOwner(actor.accountId());
+            requireCurrentTrial(actor);
             var previous = repository.findByCreateOperation(actor.accountId(), operationId);
             if (previous.isPresent()) {
-                var detail = repository.detail(actor.accountId(), previous.get().id(), null)
+                var detail = repository.detailByOperation(actor.accountId(), previous.get().id(), operationId)
                         .orElseThrow(MaterialUnavailable::new);
                 assertSameOperationBody(detail, body);
                 return detail;
@@ -46,7 +50,7 @@ final class ResumeService {
         requireTrial(actor);
         ResumeText.Normalized body = ResumeText.normalize(rawBody);
         return transaction.execute(status -> {
-            repository.lockOwner(actor.accountId());
+            requireCurrentTrial(actor);
             requireActiveRoot(actor, resumeId);
             var previous = repository.detailByOperation(actor.accountId(), resumeId, operationId);
             if (previous.isPresent()) {
@@ -75,7 +79,8 @@ final class ResumeService {
         requireTrial(actor);
         var root = repository.findByCreateOperation(actor.accountId(), operationId)
                 .orElseThrow(MaterialUnavailable::new);
-        return detail(actor, root.id(), null);
+        return repository.detailByOperation(actor.accountId(), root.id(), operationId)
+                .orElseThrow(MaterialUnavailable::new);
     }
 
     ResumeRepository.Detail versionByOperation(Actor actor, UUID resumeId, UUID operationId) {
@@ -93,7 +98,7 @@ final class ResumeService {
     ResumeRepository.Deletion delete(Actor actor, UUID resumeId) {
         requireTrial(actor);
         return transaction.execute(status -> {
-            repository.lockOwner(actor.accountId());
+            requireCurrentTrial(actor);
             var root = repository.lockRoot(resumeId).orElseThrow(MaterialUnavailable::new);
             if (!root.ownerId().equals(actor.accountId())) {
                 throw new MaterialUnavailable();
@@ -127,6 +132,10 @@ final class ResumeService {
         if (!actor.hasAuthority(AccountAuthority.TRIAL_USER)) {
             throw new AccessDeniedException("Trial-user authority is required.");
         }
+    }
+
+    private void requireCurrentTrial(Actor actor) {
+        requireTrial(accountWriteGuard.requireCurrent(actor));
     }
 
     private void assertSameOperationBody(ResumeRepository.Detail previous, ResumeText.Normalized body) {

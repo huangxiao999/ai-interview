@@ -18,14 +18,6 @@ class ResumeRepository {
         this.jdbc = jdbc;
     }
 
-    // All writes for one owner serialize through the existing account row, then lock the resume root.
-    void lockOwner(UUID ownerId) {
-        if (jdbc.queryForList("SELECT id FROM identity_account WHERE id = ? FOR UPDATE", UUID.class,
-                ownerId).isEmpty()) {
-            throw new MaterialUnavailable();
-        }
-    }
-
     Optional<Root> findByCreateOperation(UUID ownerId, UUID operationId) {
         return jdbc.query("SELECT id, owner_account_id, state FROM material_resume "
                 + "WHERE owner_account_id = ? AND create_operation_id = ?",

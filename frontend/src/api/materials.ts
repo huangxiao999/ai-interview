@@ -1,4 +1,4 @@
-import { csrfHeader } from './auth'
+import { clearCsrf, csrfHeader } from './auth'
 import { ApiError, getJson, request, requireRecord } from './http'
 
 export interface ResumeSummary {
@@ -84,6 +84,15 @@ async function readSuccess<T>(response: Response, parse: (payload: unknown) => T
   return parse(payload)
 }
 
+async function materialWriteRequest(path: string, init: RequestInit): Promise<Response> {
+  try {
+    return await request(path, init)
+  } catch (error: unknown) {
+    if (error instanceof ApiError && error.code === 'CSRF_INVALID') clearCsrf()
+    throw error
+  }
+}
+
 export async function listResumes(): Promise<ResumeSummary[]> {
   return getJson('/api/materials/resumes', (payload: unknown) => {
     if (!Array.isArray(payload)) {
@@ -107,7 +116,7 @@ export function getCreatedOperation(operationId: string): Promise<ResumeDetail> 
 export async function createResume(body: string, operationId: string): Promise<ResumeDetail> {
   let attempted = false
   try {
-    const response = await request('/api/materials/resumes', {
+    const response = await materialWriteRequest('/api/materials/resumes', {
       method: 'POST',
       headers: {
         ...(await csrfHeader()),
@@ -149,10 +158,13 @@ export function getDeletion(resumeId: string): Promise<DeletionStatus> {
 
 export async function deleteResume(resumeId: string): Promise<DeletionStatus> {
   try {
-    const response = await request(`/api/materials/resumes/${encodeURIComponent(resumeId)}`, {
-      method: 'DELETE',
-      headers: await csrfHeader(),
-    })
+    const response = await materialWriteRequest(
+      `/api/materials/resumes/${encodeURIComponent(resumeId)}`,
+      {
+        method: 'DELETE',
+        headers: await csrfHeader(),
+      },
+    )
     return await readSuccess(response, parseDeletion)
   } catch (error: unknown) {
     if (error instanceof ApiError && error.status !== null && error.status < 500) throw error

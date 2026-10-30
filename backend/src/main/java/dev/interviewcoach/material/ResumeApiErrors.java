@@ -1,6 +1,7 @@
 package dev.interviewcoach.material;
 
 import org.springframework.dao.DataAccessException;
+import org.springframework.security.authentication.CredentialsExpiredException;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -33,6 +34,11 @@ final class ResumeApiErrors {
     @ExceptionHandler(MaterialUnavailable.class)
     ResponseEntity<ErrorBody> missing() {
         return error(HttpStatus.NOT_FOUND, "RESOURCE_UNAVAILABLE", "资料不存在或不可访问");
+    }
+
+    @ExceptionHandler(CredentialsExpiredException.class)
+    ResponseEntity<ErrorBody> revokedSession() {
+        return error(HttpStatus.UNAUTHORIZED, "AUTHENTICATION_REQUIRED", "登录已失效，请重新登录");
     }
 
     @ExceptionHandler({DataAccessException.class, TransactionException.class})
