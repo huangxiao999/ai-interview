@@ -8,6 +8,7 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.AclEntryType;
 import java.nio.file.attribute.AclFileAttributeView;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -86,9 +87,13 @@ public final class AccountMaintenancePreflight
         }
     }
 
-    private static void requirePrivateOwnerAndAcl(Path path, String operator) {
+    // Package visibility lets the isolated Windows verification exercise actual file ACLs.
+    static void requirePrivateOwnerAndAcl(Path path, String operator) {
         try {
+            // Windows junctions are reparse points but Files.isSymbolicLink reports false for them.
             if (Files.isSymbolicLink(path) || !Files.exists(path, LinkOption.NOFOLLOW_LINKS)
+                    || Files.readAttributes(path, BasicFileAttributes.class,
+                            LinkOption.NOFOLLOW_LINKS).isOther()
                     || !Files.getOwner(path, LinkOption.NOFOLLOW_LINKS).getName()
                             .equalsIgnoreCase(operator)) {
                 throw new IllegalStateException("Maintenance files must be owned by the current operator.");
