@@ -31,6 +31,11 @@ final class ResumeApiErrors {
         return error(HttpStatus.CONFLICT, "OPERATION_CONFLICT", "操作标识已用于另一份正文");
     }
 
+    @ExceptionHandler(MaterialAccountChanged.class)
+    ResponseEntity<ErrorBody> accountChanged() {
+        return error(HttpStatus.CONFLICT, "ACCOUNT_CHANGED", "登录身份已变化，请核实后操作");
+    }
+
     @ExceptionHandler(MaterialUnavailable.class)
     ResponseEntity<ErrorBody> missing() {
         return error(HttpStatus.NOT_FOUND, "RESOURCE_UNAVAILABLE", "资料不存在或不可访问");

@@ -26,11 +26,11 @@ final class ResumeService {
         this.transaction = new TransactionTemplate(manager);
     }
 
-    ResumeRepository.Detail create(Actor actor, UUID operationId, String rawBody) {
+    ResumeRepository.Detail create(Actor actor, UUID expectedAccountId, UUID operationId, String rawBody) {
         requireTrial(actor);
         ResumeText.Normalized body = ResumeText.normalize(rawBody);
         return transaction.execute(status -> {
-            requireCurrentTrial(actor);
+            requireCurrentTrial(actor, expectedAccountId);
             var previous = repository.findByCreateOperation(actor.accountId(), operationId);
             if (previous.isPresent()) {
                 var detail = repository.detailByOperation(actor.accountId(), previous.get().id(), operationId)
@@ -46,11 +46,12 @@ final class ResumeService {
         });
     }
 
-    ResumeRepository.Detail addVersion(Actor actor, UUID resumeId, UUID operationId, String rawBody) {
+    ResumeRepository.Detail addVersion(Actor actor, UUID expectedAccountId, UUID resumeId,
+            UUID operationId, String rawBody) {
         requireTrial(actor);
         ResumeText.Normalized body = ResumeText.normalize(rawBody);
         return transaction.execute(status -> {
-            requireCurrentTrial(actor);
+            requireCurrentTrial(actor, expectedAccountId);
             requireActiveRoot(actor, resumeId);
             var previous = repository.detailByOperation(actor.accountId(), resumeId, operationId);
             if (previous.isPresent()) {
@@ -95,10 +96,10 @@ final class ResumeService {
         return repository.countVersions(resumeId);
     }
 
-    ResumeRepository.Deletion delete(Actor actor, UUID resumeId) {
+    ResumeRepository.Deletion delete(Actor actor, UUID expectedAccountId, UUID resumeId) {
         requireTrial(actor);
         return transaction.execute(status -> {
-            requireCurrentTrial(actor);
+            requireCurrentTrial(actor, expectedAccountId);
             var root = repository.lockRoot(resumeId).orElseThrow(MaterialUnavailable::new);
             if (!root.ownerId().equals(actor.accountId())) {
                 throw new MaterialUnavailable();
@@ -134,8 +135,11 @@ final class ResumeService {
         }
     }
 
-    private void requireCurrentTrial(Actor actor) {
+    private void requireCurrentTrial(Actor actor, UUID expectedAccountId) {
         requireTrial(accountWriteGuard.requireCurrent(actor));
+        if (!actor.accountId().equals(expectedAccountId)) {
+            throw new MaterialAccountChanged();
+        }
     }
 
     private void assertSameOperationBody(ResumeRepository.Detail previous, ResumeText.Normalized body) {
@@ -146,4 +150,7 @@ final class ResumeService {
 }
 
 final class MaterialConflict extends RuntimeException {
+}
+
+final class MaterialAccountChanged extends RuntimeException {
 }

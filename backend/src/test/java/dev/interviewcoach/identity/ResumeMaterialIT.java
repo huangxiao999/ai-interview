@@ -132,6 +132,8 @@ class ResumeMaterialIT {
         browserCommand.environment().put("P2_FRONTEND_BASE", frontend.toString());
         browserCommand.environment().put("P2_BROWSER_USER", a.login());
         browserCommand.environment().put("P2_BROWSER_PASSWORD", a.password());
+        browserCommand.environment().put("P2_BROWSER_OTHER_USER", b.login());
+        browserCommand.environment().put("P2_BROWSER_OTHER_PASSWORD", b.password());
         browserCommand.redirectErrorStream(true);
         Process browser = browserCommand.start();
         boolean finished = browser.waitFor(90, TimeUnit.SECONDS);
@@ -141,6 +143,10 @@ class ResumeMaterialIT {
         assertThat(browser.exitValue()).as(output).isZero();
         assertThat(output).contains("P2-DT-01 real Chrome material checks passed.")
                 .doesNotContain(a.password());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM material_resume_version v "
+                + "JOIN material_resume r ON r.id = v.resume_id "
+                + "WHERE r.owner_account_id = ? AND v.body = ?", Integer.class,
+                b.id(), "账号切换期间的合成草稿" + "R".repeat(110))).isZero();
     }
 
     @Test
@@ -281,6 +287,18 @@ class ResumeMaterialIT {
     }
 
     @Test
+    void changedAccountCannotAcceptOldAccountsCreateOperation() throws Exception {
+        Client current = new Client(b);
+        current.expectedAccountId = a.id();
+        UUID operationId = UUID.randomUUID();
+        assertThat(current.create("a".repeat(100), operationId).statusCode()).isEqualTo(409);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM material_resume WHERE owner_account_id = ? "
+                + "AND create_operation_id = ?", Integer.class, b.id(), operationId)).isZero();
+        current.expectedAccountId = b.id();
+        assertThat(current.create("b".repeat(100), operationId).statusCode()).isEqualTo(201);
+    }
+
+    @Test
     void concurrentAppendAndDeleteCannotLeaveUntrackedBody() throws Exception {
         Client first = new Client(a);
         Client second = new Client(a);
@@ -384,11 +402,13 @@ class ResumeMaterialIT {
         private final CookieManager cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
         private final HttpClient http = HttpClient.newBuilder().cookieHandler(cookies).build();
         private String token;
+        private UUID expectedAccountId;
 
         Client() {
         }
 
         Client(Account account) throws Exception {
+            expectedAccountId = account.id();
             String before = csrf();
             String form = "username=" + URLEncoder.encode(account.login(), StandardCharsets.UTF_8)
                     + "&password=" + URLEncoder.encode(account.password(), StandardCharsets.UTF_8);
@@ -415,6 +435,7 @@ class ResumeMaterialIT {
                     .header("Content-Type", "application/json")
                     .header("X-CSRF-TOKEN", token)
                     .header("X-Operation-Id", operation.toString())
+                    .header("X-Expected-Account-Id", expectedAccountId.toString())
                     .POST(HttpRequest.BodyPublishers.ofString(bodyJson(body)));
             assertThat(http.send(builder.build(), HttpResponse.BodyHandlers.discarding()).statusCode())
                     .isEqualTo(201);
@@ -440,6 +461,10 @@ class ResumeMaterialIT {
             var builder = HttpRequest.newBuilder(base.resolve(path)).header("Accept", "application/json");
             if (csrf != null) builder.header("X-CSRF-TOKEN", csrf);
             if (operation != null) builder.header("X-Operation-Id", operation.toString());
+            if (expectedAccountId != null && path.startsWith("/api/materials/resumes")
+                    && (method.equals("POST") || method.equals("DELETE"))) {
+                builder.header("X-Expected-Account-Id", expectedAccountId.toString());
+            }
             if (method.equals("POST")) {
                 builder.header("Content-Type", path.equals("/api/auth/login")
                         ? "application/x-www-form-urlencoded" : "application/json");

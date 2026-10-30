@@ -33,18 +33,20 @@ final class ResumeApi {
 
     @PostMapping
     ResponseEntity<ResumeDetail> create(Authentication authentication,
+            @RequestHeader("X-Expected-Account-Id") UUID expectedAccountId,
             @RequestHeader("X-Operation-Id") UUID operationId, @RequestBody BodyInput input) {
         return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore())
-                .body(ResumeDetail.from(service.create(currentActor.require(authentication), operationId,
+                .body(ResumeDetail.from(service.create(currentActor.require(authentication), expectedAccountId, operationId,
                         input == null ? null : input.body())));
     }
 
     @PostMapping("/{resumeId}/versions")
     ResponseEntity<ResumeDetail> addVersion(Authentication authentication,
-            @PathVariable UUID resumeId, @RequestHeader("X-Operation-Id") UUID operationId,
+            @PathVariable UUID resumeId, @RequestHeader("X-Expected-Account-Id") UUID expectedAccountId,
+            @RequestHeader("X-Operation-Id") UUID operationId,
             @RequestBody BodyInput input) {
         return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore())
-                .body(ResumeDetail.from(service.addVersion(currentActor.require(authentication), resumeId,
+                .body(ResumeDetail.from(service.addVersion(currentActor.require(authentication), expectedAccountId, resumeId,
                         operationId, input == null ? null : input.body())));
     }
 
@@ -91,9 +93,10 @@ final class ResumeApi {
     }
 
     @DeleteMapping("/{resumeId}")
-    ResponseEntity<DeletionStatus> delete(Authentication authentication, @PathVariable UUID resumeId) {
+    ResponseEntity<DeletionStatus> delete(Authentication authentication, @PathVariable UUID resumeId,
+            @RequestHeader("X-Expected-Account-Id") UUID expectedAccountId) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(DeletionStatus.from(service.delete(currentActor.require(authentication), resumeId)));
+                .body(DeletionStatus.from(service.delete(currentActor.require(authentication), expectedAccountId, resumeId)));
     }
 
     @GetMapping("/{resumeId}/deletion")

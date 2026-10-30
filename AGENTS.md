@@ -125,7 +125,7 @@
 - DT-05在根目录执行 `& './scripts/Verify-LoginFrontend.ps1'`，新建并保留隔离PG16测试库，运行6项基础及1项真实Chrome页面集成检查；前端 `frontend/` 下 `npm.cmd run check` 已通过。最小登录、身份核实、受保护空工作区和退出已实现，证据见DT05_VERIFICATION。
 - DT-06在根目录执行 `& './scripts/Verify-LoginRecovery.ps1'`，新建并保留隔离PG16测试库，运行6项基础及1项真实Chrome双标签集成检查；覆盖回包丢失、多窗口身份切换、过期重登、旧响应、数据库暂不可用和返回路径限制，证据见DT06_VERIFICATION。真实私有资源隔离及完整FS-A/PF/VP仍待后续执行。
 - DT-07已核查当前账号入口、规则所有权、版本与迁移边界，并登记DT-01～06既有隔离证据和未覆盖项；本轮后端6项基础测试及前端`npm.cmd run check`复测通过，开发库只读核查账号/权限/会话0行。详见[DT-07记录](<docs/DT-07 账号切片审查与证据登记.md>)。DT-02补证、真实私有资源隔离及完整FS-A/ACC/PF/VP继续开放。
-- P2-DT-01在根目录执行 `& './scripts/Verify-P2Resume.ps1'`，每次新建并保留隔离PG16库；四条审查意见的本地修复后，最新运行8项真实PG/HTTP/Chrome集成检查通过，前端在`frontend/`执行`npm.cmd run check`。V3为简历正文、版本与删除屏障；开发库尚未执行V3。该任务只证明当前正文私有闭环，不代表PDF/DOCX、JD、完整删除或PF/VP通过。证据见[P2-DT-01记录](<docs/P2-DT-01 粘贴简历私有闭环：实现与验证记录.md>)。
+- P2-DT-01在根目录执行 `& './scripts/Verify-P2Resume.ps1'`，每次新建并保留隔离PG16库；预期账号与CSRF等待竞态修复后，最新运行9项真实PG/HTTP/Chrome集成检查通过，前端在`frontend/`执行`npm.cmd run check`。V3为简历正文、版本与删除屏障；开发库尚未执行V3。该任务只证明当前正文私有闭环，不代表PDF/DOCX、JD、完整删除或PF/VP通过。证据见[P2-DT-01记录](<docs/P2-DT-01 粘贴简历私有闭环：实现与验证记录.md>)。
 - Compose及只读SQL命令见README/DT01_VERIFICATION，保留PG16卷，不执行down -v。infra/postgres中的001仅初始化vector；verify和verify-persistence为只读审计，不自动建业务表。私有文件规划仍为.local-data/private，未实现存储。秘密、用户资料、缓存、日志、备份及产物按忽略规则管理。
 - README 记录环境、详细命令、已执行结果及未验证项；基础测试不是 PF/VP 或 AI 质量验收。后续新增业务时补相关层次验证，不能只提供一条笼统测试命令冒充全部 PF 证明。
 - 修改前检查实际工作区及任务相关约定，保留已有改动；按用户目标实现可验证的小步闭环，功能或契约变化同步对应需求/设计/验收。遇到技术验证失败先修复或说明缺口，不擅自放宽业务规则。
