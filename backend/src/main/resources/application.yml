@@ -2,7 +2,7 @@ spring:
   application:
     name: interview-coach
   profiles:
-    default: local
+    default: bootstrap
   main:
     banner-mode: "off"
   jmx:
