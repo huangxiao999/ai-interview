@@ -88,10 +88,23 @@ class UploadRepository {
     }
     List<Upload> cleanup() {
         return jdbc.query("SELECT * FROM material_upload WHERE state IN ('DELETE_PENDING','FAILED') "
-                + "AND NOT file_cleaned AND (deadline_at IS NULL OR deadline_at < clock_timestamp()-interval '5 seconds') LIMIT 100", ROW);
+                + "AND NOT file_cleaned AND (deadline_at IS NULL OR deadline_at < clock_timestamp()-interval '5 seconds') "
+                + "ORDER BY cleanup_attempted_at NULLS FIRST, id LIMIT 100", ROW);
+    }
+    void cleanupAttempt(UUID id) {
+        jdbc.update("UPDATE material_upload SET cleanup_attempted_at=clock_timestamp() WHERE id=? "
+                + "AND state IN ('DELETE_PENDING','FAILED') AND NOT file_cleaned", id);
+    }
+    void cleanupFailed(UUID id) {
+        jdbc.update("UPDATE material_upload SET cleanup_error_code='FILE_IO' WHERE id=? "
+                + "AND state IN ('DELETE_PENDING','FAILED') AND NOT file_cleaned", id);
+    }
+    int overdueDeletions() {
+        return jdbc.queryForObject("SELECT count(*) FROM material_delete_request WHERE state='PENDING' "
+                + "AND cleanup_deadline_at <= clock_timestamp()", Integer.class);
     }
     void cleaned(UUID id) {
-        jdbc.update("UPDATE material_upload SET file_cleaned=true,original_name=CASE WHEN state='DELETE_PENDING' THEN 'removed' ELSE original_name END,"
+        jdbc.update("UPDATE material_upload SET file_cleaned=true,cleanup_error_code=NULL,original_name=CASE WHEN state='DELETE_PENDING' THEN 'removed' ELSE original_name END,"
                 + "sha256=CASE WHEN state='DELETE_PENDING' THEN '' ELSE sha256 END,state=CASE WHEN state='DELETE_PENDING' "
                 + "THEN 'CLEANED' ELSE state END,parsed_body=NULL WHERE id=? AND state IN ('DELETE_PENDING','FAILED')", id);
         jdbc.update("UPDATE material_cleanup_item SET state='CLEANED' WHERE target_type='PRIVATE_FILE' AND target_id=?", id);

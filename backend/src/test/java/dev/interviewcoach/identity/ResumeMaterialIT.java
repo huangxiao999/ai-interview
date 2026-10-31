@@ -72,7 +72,7 @@ class ResumeMaterialIT {
                 + "VALUES(?,?,1,?,?,100)", legacyVersion, legacyRoot, UUID.randomUUID(), "L".repeat(100));
         flyway = Flyway.configure().dataSource(url, username, password).defaultSchema("app")
                 .schemas("app").locations("classpath:db/migration").load();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(2);
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(3);
         assertThat(flyway.migrate().migrationsExecuted).isZero();
         flyway.validate();
         assertThat(jdbc.queryForObject("SELECT body FROM material_resume_version WHERE id = ?",
@@ -103,8 +103,72 @@ class ResumeMaterialIT {
     }
 
     @Test
+    void cleanupFailureKeepsWholeRootInaccessibleAndRetryIsIdempotent() throws Exception {
+        var user = new Client(insertAccount(Set.of(AccountAuthority.TRIAL_USER)));
+        var otherUser = new Client(insertAccount(Set.of(AccountAuthority.TRIAL_USER)));
+        UUID root = UUID.fromString(json(user.create("Synthetic private resume ".repeat(10), UUID.randomUUID())).get("resumeId").toString());
+        user.addJd(root, "Synthetic JD ".repeat(10), UUID.randomUUID());
+        String id = json(user.upload("cleanup.docx", docx("Synthetic cleanup resume ".repeat(10)), UUID.randomUUID(), root)).get("uploadId").toString();
+        awaitUpload(user, id);
+        assertThat(user.send("POST", "/api/materials/uploads/" + id + "/confirmation", user.bodyJson("Synthetic confirmed body ".repeat(10)), user.token, UUID.randomUUID()).statusCode()).isEqualTo(200);
+        jdbc.execute("CREATE FUNCTION fail_private_cleanup() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.target_type='PRIVATE_FILE' THEN RAISE EXCEPTION 'synthetic private cleanup failure'; END IF; RETURN NEW; END $$");
+        jdbc.execute("CREATE TRIGGER fail_private_cleanup BEFORE INSERT ON material_cleanup_item FOR EACH ROW EXECUTE FUNCTION fail_private_cleanup()");
+        try {
+            assertThat(user.delete(root, true).statusCode()).isEqualTo(503);
+            assertThat(jdbc.queryForObject("SELECT state FROM material_resume WHERE id=?", String.class, root)).isEqualTo("ACTIVE");
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM material_resume_version WHERE resume_id=?", Integer.class, root)).isEqualTo(2);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM material_jd_version WHERE resume_id=?", Integer.class, root)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM material_delete_request WHERE resume_id=?", Integer.class, root)).isZero();
+        } finally {
+            jdbc.execute("DROP TRIGGER fail_private_cleanup ON material_cleanup_item");
+            jdbc.execute("DROP FUNCTION fail_private_cleanup()");
+        }
+        Path file = privateRoot().resolve(id + ".bin");
+        assertThat(file.getParent()).isEqualTo(privateRoot());
+        java.nio.file.Files.delete(file);
+        java.nio.file.Files.createDirectory(file);
+        java.nio.file.Files.writeString(file.resolve("sentinel"), "synthetic obstruction");
+        // 解析子进程已退出；在隔离库推进清理保护期，不改变机器/业务时钟。
+        jdbc.update("UPDATE material_upload SET deadline_at=clock_timestamp()-interval '1 minute' WHERE id=?::uuid", id);
+        String otherRoot = json(otherUser.create("Other user preserved ".repeat(10), UUID.randomUUID())).get("resumeId").toString();
+        var receipt = json(user.delete(root, true));
+        assertThat(json(user.delete(root, true)).get("requestId")).isEqualTo(receipt.get("requestId"));
+        for (int n = 0; n < 100 && jdbc.queryForObject("SELECT cleanup_error_code FROM material_upload WHERE id=?::uuid", String.class, id) == null; n++) Thread.sleep(100);
+        assertThat(jdbc.queryForObject("SELECT cleanup_error_code FROM material_upload WHERE id=?::uuid", String.class, id)).isEqualTo("FILE_IO");
+        assertThat(jdbc.queryForObject("SELECT cleanup_attempted_at IS NOT NULL FROM material_upload WHERE id=?::uuid", Boolean.class, id)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT state FROM material_delete_request WHERE resume_id=?", String.class, root)).isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM material_resume_version WHERE resume_id=?", Integer.class, root)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM material_jd_version WHERE resume_id=?", Integer.class, root)).isZero();
+        assertThat(user.get("/api/materials/uploads/" + id + "/original").statusCode()).isEqualTo(404);
+        assertThat(otherUser.get("/api/materials/resumes/" + otherRoot).statusCode()).isEqualTo(200);
+        // 文件已移除但完成事务失败：仍持久保留未完成项，下轮重做缺失文件删除是安全的。
+        jdbc.execute("CREATE FUNCTION fail_cleanup_completion() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.target_type='PRIVATE_FILE' AND NEW.state='CLEANED' THEN RAISE EXCEPTION 'synthetic completion failure'; END IF; RETURN NEW; END $$");
+        jdbc.execute("CREATE TRIGGER fail_cleanup_completion BEFORE UPDATE ON material_cleanup_item FOR EACH ROW EXECUTE FUNCTION fail_cleanup_completion()");
+        try {
+            java.nio.file.Files.writeString(privateRoot().resolve(id + ".result"), "synthetic completion marker");
+            java.nio.file.Files.delete(file.resolve("sentinel")); java.nio.file.Files.delete(file);
+            for (int n = 0; n < 100 && java.nio.file.Files.exists(privateRoot().resolve(id + ".result")); n++) Thread.sleep(100);
+            assertThat(java.nio.file.Files.exists(privateRoot().resolve(id + ".result"))).isFalse();
+            assertThat(jdbc.queryForObject("SELECT state FROM material_delete_request WHERE resume_id=?", String.class, root)).isEqualTo("PENDING");
+            assertThat(jdbc.queryForObject("SELECT file_cleaned FROM material_upload WHERE id=?::uuid", Boolean.class, id)).isFalse();
+            assertThat(user.get("/api/materials/uploads/" + id + "/original").statusCode()).isEqualTo(404);
+        } finally {
+            jdbc.execute("DROP TRIGGER fail_cleanup_completion ON material_cleanup_item");
+            jdbc.execute("DROP FUNCTION fail_cleanup_completion()");
+        }
+        for (int n = 0; n < 100 && !"CLEANED".equals(jdbc.queryForObject("SELECT state FROM material_delete_request WHERE resume_id=?", String.class, root)); n++) Thread.sleep(100);
+        assertThat(jdbc.queryForObject("SELECT state FROM material_delete_request WHERE resume_id=?", String.class, root)).isEqualTo("CLEANED");
+        assertThat(jdbc.queryForObject("SELECT cleaned_at <= cleanup_deadline_at FROM material_delete_request WHERE resume_id=?", Boolean.class, root)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT original_name FROM material_upload WHERE id=?::uuid", String.class, id)).isEqualTo("removed");
+        assertThat(jdbc.queryForObject("SELECT cleanup_error_code FROM material_upload WHERE id=?::uuid", String.class, id)).isNull();
+        assertThat(json(user.delete(root, true)).get("requestId")).isEqualTo(receipt.get("requestId"));
+    }
+
+    @Test
     void zzRestartReconcilesHalfPublicationAndRetriesPhysicalCleanup() throws Exception {
         context.close();
+        Path multipartLeftover = privateRoot().resolve("multipart/synthetic-leftover");
+        java.nio.file.Files.writeString(multipartLeftover, "synthetic interrupted HTTP buffer");
         UUID staged = UUID.randomUUID();
         UUID published = UUID.randomUUID();
         UUID interrupted = UUID.randomUUID();
@@ -117,11 +181,16 @@ class ResumeMaterialIT {
         java.nio.file.Files.writeString(privateRoot().resolve(staged + ".part"), "synthetic");
         java.nio.file.Files.writeString(privateRoot().resolve(published + ".bin"), "synthetic");
         java.nio.file.Files.writeString(privateRoot().resolve(interrupted + ".bin"), "synthetic");
+        java.nio.file.Files.writeString(privateRoot().resolve(interrupted + ".txt"), "synthetic parsed copy");
+        java.nio.file.Files.writeString(privateRoot().resolve(interrupted + ".result"), "READY");
+        Path workCopy = java.nio.file.Files.createDirectory(privateRoot().resolve(interrupted + ".work"));
+        java.nio.file.Files.writeString(workCopy.resolve("copy"), "synthetic worker copy");
         Path blocking = java.nio.file.Files.createDirectory(privateRoot().resolve(blocked + ".bin"));
         java.nio.file.Files.writeString(blocking.resolve("sentinel"), "synthetic");
         context = new SpringApplicationBuilder(InterviewCoachApplication.class).sources(UploadCommitFaults.class)
                 .profiles("local").run("--server.port=0", "--material.private-root=" + privateRoot());
         base = URI.create("http://127.0.0.1:" + context.getEnvironment().getRequiredProperty("local.server.port"));
+        assertThat(java.nio.file.Files.exists(multipartLeftover)).isFalse();
         for (int n = 0; n < 100; n++) {
             if (jdbc.queryForObject("SELECT count(*) FROM material_upload WHERE id IN (?,?) AND state='CLEANED'",
                     Integer.class, staged, published) == 2) break;
@@ -140,6 +209,9 @@ class ResumeMaterialIT {
         for (UUID id : java.util.List.of(staged, published, interrupted, blocked)) {
             assertThat(java.nio.file.Files.exists(privateRoot().resolve(id + ".bin"))).isFalse();
             assertThat(java.nio.file.Files.exists(privateRoot().resolve(id + ".part"))).isFalse();
+            assertThat(java.nio.file.Files.exists(privateRoot().resolve(id + ".txt"))).isFalse();
+            assertThat(java.nio.file.Files.exists(privateRoot().resolve(id + ".result"))).isFalse();
+            assertThat(java.nio.file.Files.exists(privateRoot().resolve(id + ".work"))).isFalse();
         }
     }
 

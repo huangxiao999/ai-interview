@@ -1,5 +1,6 @@
 # P2-DT-01/02/03: isolated real-PG16 version/file/HTTP/transaction/browser checks.
 # Retain the original database prefix for existing isolation guards and historical evidence.
+param([switch]$IncludeCleanup)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -37,6 +38,20 @@ try {
     $env:DB_PASSWORD = $localValues['DB_PASSWORD']
     $env:P2_DT01_TEST_DATABASE = $testDatabase
     $manifest = @{ database = $testDatabase; createdAt = [DateTimeOffset]::Now.ToString('o'); status = 'running' }
+    if ($IncludeCleanup) {
+        $sourceHashes = @{}
+        foreach ($source in @(
+            'backend/src/main/resources/db/migration/V6__track_cleanup_attempts.sql',
+            'backend/src/main/java/dev/interviewcoach/material/UploadRepository.java',
+            'backend/src/main/java/dev/interviewcoach/material/UploadService.java',
+            'backend/src/test/java/dev/interviewcoach/material/CleanupRepositoryIT.java',
+            'backend/src/test/java/dev/interviewcoach/identity/ResumeMaterialIT.java',
+            'scripts/Verify-P2ResumeBrowser.mjs', 'scripts/Verify-P2Resume.ps1'
+        )) {
+            $sourceHashes[$source] = (Get-FileHash -LiteralPath (Join-Path $projectRoot $source) -Algorithm SHA256).Hash
+        }
+        $manifest['sourceSha256'] = $sourceHashes
+    }
     $logPath = Join-Path $projectRoot ".cache/$testDatabase.log"
     $manifestPath = Join-Path $projectRoot ".cache/$testDatabase.json"
     $manifest['log'] = ".cache/$testDatabase.log"
@@ -45,14 +60,28 @@ try {
 
     Set-Location (Join-Path $projectRoot 'backend')
     $verificationStarted = [DateTime]::UtcNow
+    $integrationTests = if ($IncludeCleanup) { 'ResumeMaterialIT,CleanupRepositoryIT' } else { 'ResumeMaterialIT' }
     ./mvnw.cmd '-Dmaven.repo.local=../.cache/maven-repository' -B -ntp -Pdatabase-verification `
-        '-Dit.test=ResumeMaterialIT' verify *> $logPath
+        "-Dit.test=$integrationTests" verify *> $logPath
     $verificationExit = $LASTEXITCODE
+    if ($IncludeCleanup) {
+        foreach ($source in $sourceHashes.Keys) {
+            if ((Get-FileHash -LiteralPath (Join-Path $projectRoot $source) -Algorithm SHA256).Hash -ne $sourceHashes[$source]) {
+                $verificationExit = 1
+                $manifest['sourceChangedDuringRun'] = $true
+            }
+        }
+    }
     $report = Join-Path $projectRoot 'backend/target/failsafe-reports/TEST-dev.interviewcoach.identity.ResumeMaterialIT.xml'
     if ((Test-Path -LiteralPath $report) -and (Get-Item -LiteralPath $report).LastWriteTimeUtc -ge $verificationStarted) {
         $reportDirectory = Join-Path $projectRoot ".cache/$testDatabase-reports"
         New-Item -ItemType Directory -Path $reportDirectory -Force | Out-Null
         Copy-Item -LiteralPath $report -Destination $reportDirectory
+        if ($IncludeCleanup) {
+            $cleanupReport = Join-Path $projectRoot 'backend/target/failsafe-reports/TEST-dev.interviewcoach.material.CleanupRepositoryIT.xml'
+            if (-not (Test-Path -LiteralPath $cleanupReport) -or (Get-Item -LiteralPath $cleanupReport).LastWriteTimeUtc -lt $verificationStarted) { $verificationExit = 1 }
+            else { Copy-Item -LiteralPath $cleanupReport -Destination $reportDirectory }
+        }
         $unitDirectory = Join-Path $reportDirectory 'unit'
         New-Item -ItemType Directory -Path $unitDirectory -Force | Out-Null
         Get-ChildItem -LiteralPath (Join-Path $projectRoot 'backend/target/surefire-reports') -Filter 'TEST-*.xml' |
@@ -65,6 +94,7 @@ try {
     $manifest['migrationV5Sha256'] = (Get-FileHash -LiteralPath (Join-Path $projectRoot 'backend/src/main/resources/db/migration/V5__create_private_uploads.sql') -Algorithm SHA256).Hash
     $manifest['parserWorkerSha256'] = (Get-FileHash -LiteralPath (Join-Path $projectRoot 'backend/src/main/java/dev/interviewcoach/material/ParserWorker.java') -Algorithm SHA256).Hash
     $manifest['status'] = if ($verificationExit -eq 0) { 'passed' } else { 'failed' }
+    $manifest['integrationTests'] = $integrationTests
     $manifest['exitCode'] = $verificationExit
     $manifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding UTF8
     $manifest | ConvertTo-Json | Set-Content -LiteralPath '../.cache/p2-dt01-test-run.json' -Encoding UTF8
