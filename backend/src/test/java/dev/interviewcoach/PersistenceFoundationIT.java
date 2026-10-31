@@ -60,12 +60,13 @@ class PersistenceFoundationIT {
             assertThat(jdbc.queryForList("""
                     SELECT tablename FROM pg_tables WHERE schemaname='app' ORDER BY tablename
                     """, String.class)).containsExactly("flyway_schema_history", "identity_account",
-                    "identity_account_authority", "material_cleanup_item", "material_delete_request",
+                    "identity_account_authority", "knowledge_document", "knowledge_review", "knowledge_version",
+                    "material_cleanup_item", "material_delete_request",
                     "material_jd_version", "material_resume", "material_resume_version", "material_upload",
                     "spring_session", "spring_session_attributes");
             assertThat(jdbc.queryForList("""
                     SELECT version FROM flyway_schema_history WHERE type='SQL' AND success ORDER BY installed_rank
-                    """, String.class)).containsExactly("1", "2", "3", "4", "5", "6");
+                    """, String.class)).containsExactly("1", "2", "3", "4", "5", "6", "7");
             assertThat(jdbc.queryForObject("SELECT count(*) FROM identity_account", Integer.class)).isZero();
             assertThat(jdbc.queryForObject("SELECT count(*) FROM spring_session", Integer.class)).isZero();
             assertThat(context.getBeanFactory().getBeanDefinition("sessionRepository").getDependsOn())
@@ -203,13 +204,13 @@ class PersistenceFoundationIT {
         // V2 did not commit. Only this temporary failure fixture is corrected; released migrations stay immutable.
         Files.writeString(faulty, validSql);
         // 当前应用需要完整迁移集；只修正隔离夹具的 V2，然后继续其后的正式迁移。
-        for (String name : List.of("V3__create_resume_material_tables.sql", "V4__create_jd_versions.sql", "V5__create_private_uploads.sql", "V6__track_cleanup_attempts.sql")) {
+        for (String name : List.of("V3__create_resume_material_tables.sql", "V4__create_jd_versions.sql", "V5__create_private_uploads.sql", "V6__track_cleanup_attempts.sql", "V7__create_reviewed_knowledge.sql")) {
             Files.writeString(migrations.resolve(name), resource("db/migration/" + name));
         }
         try (var context = start("failure_case", location)) {
             var jdbc = new JdbcTemplate(context.getBean(DataSource.class));
             assertThat(jdbc.queryForList("SELECT version FROM flyway_schema_history WHERE type='SQL' AND success ORDER BY installed_rank",
-                    String.class)).containsExactly("1", "2", "3", "4", "5", "6");
+                    String.class)).containsExactly("1", "2", "3", "4", "5", "6", "7");
             assertThat(jdbc.queryForObject("SELECT count(*) FROM identity_account", Integer.class)).isZero();
         }
     }
