@@ -95,6 +95,14 @@ try {
       }
       await delay(100)
     }
+    const snapshot = await evaluate(`({ path: location.pathname,
+      jdVersions: document.querySelectorAll('[data-jd-version]').length,
+      resumeVersions: document.querySelectorAll('[data-resume-version]').length,
+      jdInputPresent: !!document.querySelector('#jd-body'),
+      jdInputDisabled: document.querySelector('#jd-body')?.disabled,
+      roots: Array.from(document.querySelectorAll('.material-list .resume-label')).map(item => item.title) })`, targetSession)
+      .catch(() => ({ contextUnavailable: true }))
+    console.error('Browser verification state (IDs/counts only):', JSON.stringify(snapshot))
     throw new Error(`Timed out waiting for ${label}`)
   }
   async function login(user = username, secretValue = password, targetSession = sessionId) {
@@ -272,7 +280,10 @@ try {
   await waitUntil(`document.body.innerText.includes('确认删除整份简历')`, 'CSRF-case cleanup confirmation')
   await evaluate(`Array.from(document.querySelectorAll('button'))
     .find(button => button.textContent.includes('确认删除')).click()`)
-  await waitUntil(`!document.body.innerText.includes(${JSON.stringify(unsaved)})`, 'CSRF-case cleanup')
+  // 禁访会先移除详情；等删除后的列表刷新也完成，才点击下一步的刷新按钮。
+  await waitUntil(`!document.body.innerText.includes(${JSON.stringify(unsaved)})
+    && !Array.from(document.querySelectorAll('button'))
+      .find(button => button.textContent.includes('刷新列表')).disabled`, 'CSRF-case cleanup')
   await evaluate(`window.p2Hooks.postOperations = []`)
 
   const beforeLateSaveCount = await evaluate(`document.querySelectorAll('.material-list li').length`)
@@ -293,7 +304,8 @@ try {
       .find(button => button.textContent.includes('确认并保存简历')).click()
   })()`)
   await waitUntil(`document.body.innerText.includes('简历正文已保存为第 1 版')
-    && document.querySelectorAll('.material-list li').length === ${beforeLateSaveCount + 1}`,
+    && document.querySelectorAll('.material-list li').length === ${beforeLateSaveCount + 1}
+    && document.querySelector('.material-list li:first-child button')?.disabled === false`,
     'saved resume and refreshed list')
   await evaluate(`window.p2Hooks.releaseList()`)
   await waitUntil(`window.p2Hooks.listReleaseApplied`, 'older list response after save')
@@ -346,7 +358,8 @@ try {
       .find(button => button.textContent.includes('沿用原操作重试')).click()
   })()`)
   await waitUntil(`document.body.innerText.includes('简历正文已保存为第 1 版')
-    && document.querySelectorAll('.material-list li').length === ${beforeUnknownCount + 1}`,
+    && document.querySelectorAll('.material-list li').length === ${beforeUnknownCount + 1}
+    && document.querySelector('.material-list li:first-child button')?.disabled === false`,
     'same operation retry')
   assert.equal(await evaluate(`window.p2Hooks.postOperations.length`), 3)
   assert.equal(await evaluate(`window.p2Hooks.postOperations[2]`), pendingOperationBeforePrecheck)
@@ -356,7 +369,8 @@ try {
   await waitUntil(`document.body.innerText.includes('确认删除整份简历')`, 'unknown-case cleanup confirmation')
   await evaluate(`Array.from(document.querySelectorAll('button'))
     .find(button => button.textContent.includes('确认删除')).click()`)
-  await waitUntil(`document.querySelectorAll('.material-list li').length === ${beforeUnknownCount}`,
+  await waitUntil(`document.querySelectorAll('.material-list li').length === ${beforeUnknownCount}
+    && document.querySelector('.material-list li:first-child button')?.disabled === false`,
     'unknown-case cleanup')
   await evaluate(`document.querySelector('.material-list li:first-child button').click()`)
   await waitUntil(`!!document.querySelector('#jd-body')`, 'version editing panel')
@@ -436,8 +450,10 @@ try {
   await waitUntil(`document.querySelector('[aria-label="简历详情"] pre')?.textContent === ${JSON.stringify(synthetic)}`, 'fixed resume V1')
 
   // Keep B's deletion dialog open while A's accepted version save remains unresolved.
+  const versionRootA = await evaluate(`location.pathname.split('/').pop()`)
   for (const recoverDelete of [false, true]) {
-    await waitUntil(`!document.querySelector('#resume-body')?.disabled`, 'ready to create deletion target B')
+    await waitUntil(`document.querySelector('#resume-body')?.disabled === false
+      && document.querySelector('#jd-body')?.disabled === false`, 'ready to create deletion target B')
     const listCount = await evaluate(`document.querySelectorAll('.material-list li').length`)
     const versionCount = await evaluate(`document.querySelectorAll('[data-jd-version]').length`)
     await evaluate(`(() => {
@@ -450,11 +466,15 @@ try {
       && !document.querySelector('#resume-body')?.disabled`, 'B created before deletion confirmation')
     await evaluate(`Array.from(document.querySelectorAll('.material-list li:first-child button'))
       .find(button => button.textContent.includes('删除整份')).click()`)
+    // 使用已知根ID，不能把异步排序中的第二行等同于 A。
     await waitUntil(`document.body.innerText.includes('确认删除整份简历')
-      && !document.querySelector('.material-list li:nth-child(2) button').disabled`, 'B deletion awaiting confirmation')
-    await evaluate(`document.querySelector('.material-list li:nth-child(2) button').click()`)
-    await waitUntil(`document.querySelectorAll('[data-jd-version]').length === ${versionCount}
-      && !document.querySelector('#jd-body')?.disabled`, 'A reopened with B deletion still pending')
+      && document.querySelector('.resume-label[title="${versionRootA}"]')
+        ?.closest('li').querySelector('button').disabled === false`, 'B deletion awaiting confirmation')
+    await evaluate(`document.querySelector('.resume-label[title="${versionRootA}"]')
+      .closest('li').querySelector('button').click()`)
+    await waitUntil(`location.pathname.endsWith('/${versionRootA}')
+      && document.querySelectorAll('[data-jd-version]').length === ${versionCount}
+      && document.querySelector('#jd-body')?.disabled === false`, 'A reopened with B deletion still pending')
     const pendingBody = '删除其他简历时保留的JD' + (recoverDelete ? 'V' : 'U').repeat(70)
     await evaluate(`(() => {
       const input = document.querySelector('#jd-body')

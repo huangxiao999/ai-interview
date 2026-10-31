@@ -180,6 +180,8 @@ final class UploadService {
     @Scheduled(fixedDelay = 1000)
     void work() {
         if (!ready) return;
+        // 清理不依赖上传接收/解析调度成功；失败目标轮转，禁访状态始终不变。
+        clean();
         reconcilePublication();
         uploads.expireParsers();
         for (var item : uploads.queued()) {
@@ -198,7 +200,13 @@ final class UploadService {
                 } finally { permits.release(); }
             });
         }
-        clean();
+    }
+
+    @Scheduled(fixedDelay = 60000)
+    void auditCleanupDeadline() {
+        if (!ready) return;
+        int overdue = uploads.overdueDeletions();
+        if (overdue > 0) LOG.warn("Material cleanup deadline breached: {} pending requests", overdue);
     }
 
     private byte[] physical(UploadRepository.Upload u) throws IOException {
@@ -242,9 +250,14 @@ final class UploadService {
         for (var u : uploads.cleanup()) {
             if (publishing.contains(u.id())) continue;
             try {
+                // 先持久登记尝试；故障或进程中断后，其余目标仍有机会被选中。
+                uploads.cleanupAttempt(u.id());
                 files.remove(u.id());
                 tx.executeWithoutResult(s -> uploads.cleaned(u.id()));
-            } catch (IOException | org.springframework.dao.DataAccessException ex) {
+            } catch (IOException ex) {
+                uploads.cleanupFailed(u.id());
+                LOG.warn("Private cleanup pending: {}", u.id());
+            } catch (org.springframework.dao.DataAccessException ex) {
                 LOG.warn("Private cleanup pending: {}", u.id());
             }
         }
