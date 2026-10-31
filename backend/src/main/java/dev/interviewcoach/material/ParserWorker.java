@@ -35,7 +35,8 @@ public final class ParserWorker {
         Path result = Path.of(args[2]);
         String code = "PARSE_FAILED";
         try {
-            String text = extract(input, args[3]);
+            // 与人工确认使用同一规范化口径，再按码点判断上限；短正文仍允许用户核对补全。
+            String text = ResumeText.normalizeWhitespace(extract(input, args[3]));
             if (text.isBlank()) code = "NO_TEXT";
             else if (text.codePointCount(0, text.length()) > 20_000) code = "TEXT_TOO_LONG";
             else if (System.currentTimeMillis() < deadline) { Files.writeString(output, text); code = "READY"; }

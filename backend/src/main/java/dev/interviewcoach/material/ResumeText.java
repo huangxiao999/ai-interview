@@ -17,12 +17,16 @@ final class ResumeText {
         if (raw == null) {
             throw new InvalidMaterial(message);
         }
-        String body = raw.replace("\r\n", "\n").replace('\r', '\n').strip();
+        String body = normalizeWhitespace(raw);
         int count = body.codePointCount(0, body.length());
         if (count < minimum || count > maximum) {
             throw new InvalidMaterial(message);
         }
         return new Normalized(body, count);
+    }
+
+    static String normalizeWhitespace(String raw) {
+        return raw.replace("\r\n", "\n").replace('\r', '\n').strip();
     }
 
     record Normalized(String body, int codepointCount) {

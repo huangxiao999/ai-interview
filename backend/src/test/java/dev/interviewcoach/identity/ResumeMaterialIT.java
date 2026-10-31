@@ -233,6 +233,43 @@ class ResumeMaterialIT {
     }
 
     @Test
+    void normalizedFileTextAtLimitCanBeConfirmedWithoutTruncation() throws Exception {
+        var user = new Client(a);
+        String boundary = "J".repeat(19_999) + "😀";
+        String multiline = "J".repeat(9_999) + "\n" + "K".repeat(9_999) + "😀";
+        String[][] cases = {
+            {boundary, boundary},
+            {" \t" + boundary + "\r\n\t ", boundary},
+            {multiline.replace("\n", "\r\n"), multiline}
+        };
+        for (String[] fixture : cases) {
+            var accepted = user.upload("boundary.docx", docx(fixture[0]), UUID.randomUUID(), null);
+            assertThat(accepted.statusCode()).isEqualTo(200);
+            String id = json(accepted).get("uploadId").toString();
+            var parsed = awaitUpload(user, id);
+            assertThat(parsed.get("state")).isEqualTo("READY");
+            assertThat(parsed.get("body")).isEqualTo(fixture[1]);
+            var confirmed = user.send("POST", "/api/materials/uploads/" + id + "/confirmation",
+                    user.bodyJson(fixture[1]), user.token, UUID.randomUUID());
+            assertThat(confirmed.statusCode()).isEqualTo(200);
+            UUID version = UUID.fromString(json(confirmed).get("versionId").toString());
+            assertThat(jdbc.queryForObject("SELECT body FROM material_resume_version WHERE id=?", String.class, version))
+                    .isEqualTo(fixture[1]);
+        }
+        UUID operation = UUID.randomUUID();
+        var rejected = user.upload("over-limit.docx", docx(" " + boundary + "X\r\n"), operation, null);
+        assertThat(rejected.statusCode()).isEqualTo(200);
+        String id = json(rejected).get("uploadId").toString();
+        assertThat(awaitUpload(user, id).get("state")).isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("SELECT error_code FROM material_upload WHERE id=?::uuid", String.class, id))
+                .isEqualTo("TEXT_TOO_LONG");
+        assertThat(jdbc.queryForObject("SELECT parsed_body FROM material_upload WHERE id=?::uuid", String.class, id)).isNull();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM material_resume WHERE create_operation_id=?", Integer.class, operation)).isZero();
+        assertThat(user.send("POST", "/api/materials/uploads/" + id + "/confirmation",
+                user.bodyJson(boundary), user.token, UUID.randomUUID()).statusCode()).isEqualTo(409);
+    }
+
+    @Test
     void uploadConfirmationRollbackAndDeletionBarrierAreAtomic() throws Exception {
         var user = new Client(a);
         UUID root = UUID.fromString(json(user.create("Q".repeat(100), UUID.randomUUID())).get("resumeId").toString());
