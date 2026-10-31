@@ -27,6 +27,7 @@ const {
   pendingVersionSave,
   pendingOperation,
   versionMessage,
+  versionsState,
 } = storeToRefs(materials)
 
 function current(generation: number, resumeId: string): boolean {
@@ -52,6 +53,8 @@ async function refreshVersions(): Promise<void> {
   const generation = materials.generation
   const resumeId = props.resumeId
   const requestId = ++materials.versionRequestId
+  if (versionsState.value === 'failed') versionMessage.value = ''
+  versionsState.value = 'loading'
   try {
     const [resumes, jds] = await Promise.all([
       listVersions(resumeId, 'resume'),
@@ -60,8 +63,17 @@ async function refreshVersions(): Promise<void> {
     if (!current(generation, resumeId) || requestId !== materials.versionRequestId) return
     resumeVersions.value = resumes
     jdVersions.value = jds
+    versionsState.value = 'ready'
   } catch (error: unknown) {
-    if (current(generation, resumeId) && requestId === materials.versionRequestId) showError(error)
+    if (current(generation, resumeId) && requestId === materials.versionRequestId) {
+      versionsState.value = 'failed'
+      if (!(
+        error instanceof ApiError &&
+        error.status === 404 &&
+        (await materials.reconcileDeletedRoot(resumeId, generation))
+      ))
+        if (current(generation, resumeId)) showError(error)
+    }
   }
 }
 
@@ -78,16 +90,24 @@ async function selectVersion(kind: VersionKind, versionId: string): Promise<void
   if (materialsBusy.value || pendingVersionSave.value) return
   const generation = materials.generation
   const resumeId = props.resumeId
+  const requestId = ++materials.detailRequestId
   materialsBusy.value = true
   try {
     const detail = await getVersion(resumeId, kind, versionId)
-    if (!current(generation, resumeId)) return
+    if (!current(generation, resumeId) || requestId !== materials.detailRequestId) return
     if (kind === 'resume') materials.selected = detail
     else selectedJd.value = detail
   } catch (error: unknown) {
-    if (current(generation, resumeId)) showError(error)
+    if (current(generation, resumeId) && requestId === materials.detailRequestId) {
+      if (!(
+        error instanceof ApiError &&
+        error.status === 404 &&
+        (await materials.reconcileDeletedRoot(resumeId, generation))
+      ))
+        if (current(generation, resumeId)) showError(error)
+    }
   } finally {
-    if (current(generation, resumeId)) materialsBusy.value = false
+    if (generation === materials.generation) materialsBusy.value = false
   }
 }
 
@@ -148,12 +168,19 @@ async function saveVersion(kind: VersionKind): Promise<void> {
     if (current(generation, operation.resumeId)) await acceptResult(detail, operation.kind)
   } catch (error: unknown) {
     if (!current(generation, operation.resumeId)) return
+    if (
+      error instanceof ApiError &&
+      error.status === 404 &&
+      (await materials.reconcileDeletedRoot(operation.resumeId, generation))
+    )
+      return
+    if (!current(generation, operation.resumeId)) return
     // 本次预检失败不能证明此前同一操作未提交；未决正文与标识一起保留。
     if (!retrying && (!(error instanceof ApiError) || error.code !== 'RESULT_UNKNOWN'))
       pendingVersionSave.value = null
     showError(error)
   } finally {
-    if (current(generation, operation.resumeId)) materialsBusy.value = false
+    if (generation === materials.generation) materialsBusy.value = false
   }
 }
 
@@ -172,9 +199,16 @@ async function verifyVersion(): Promise<void> {
     )
     if (current(generation, operation.resumeId)) await acceptResult(detail, operation.kind)
   } catch (error: unknown) {
-    if (current(generation, operation.resumeId)) showError(error)
+    if (current(generation, operation.resumeId)) {
+      if (!(
+        error instanceof ApiError &&
+        error.status === 404 &&
+        (await materials.reconcileDeletedRoot(operation.resumeId, generation))
+      ))
+        if (current(generation, operation.resumeId)) showError(error)
+    }
   } finally {
-    if (current(generation, operation.resumeId)) materialsBusy.value = false
+    if (generation === materials.generation) materialsBusy.value = false
   }
 }
 </script>
@@ -183,85 +217,114 @@ async function verifyVersion(): Promise<void> {
   <section class="material-detail" aria-label="资料历史版本">
     <h2>资料版本</h2>
     <p>确认修改会追加新版本，历史正文保持不变。保存资料不代表已通过岗位语义分析。</p>
+    <p v-if="versionsState === 'loading'" role="status">正在加载资料版本…</p>
+    <p v-if="versionsState === 'failed'" role="alert">
+      版本列表加载失败，请刷新版本列表；暂不能把旧列表当作最新事实。
+    </p>
     <p v-if="pendingOperation" role="status">
       新建简历的保存结果尚未核实，请先核实原保存结果或沿用原操作重试，再保存资料版本。
     </p>
-    <h3>简历版本</h3>
-    <button
-      v-for="version in resumeVersions"
-      :key="version.versionId"
-      type="button"
-      class="button-secondary"
-      :disabled="materialsBusy || !!pendingVersionSave"
-      :data-resume-version="version.versionNo"
-      @click="selectVersion('resume', version.versionId)"
-    >
-      查看简历第 {{ version.versionNo }} 版
-    </button>
-    <button
-      type="button"
-      class="button-secondary"
-      :disabled="materialsBusy || !!pendingVersionSave"
-      @click="resumeVersionDraft = materials.selected?.body ?? ''"
-    >
-      基于当前简历版本编辑
-    </button>
-    <label for="resume-version-body">简历新版本草稿（100～20,000 个 Unicode 码点）</label>
-    <textarea
-      id="resume-version-body"
-      v-model="resumeVersionDraft"
-      rows="5"
-      :disabled="materialsBusy || !!pendingVersionSave"
-    />
-    <button
-      type="button"
-      class="button-primary"
-      :disabled="materialsBusy || !!pendingVersionSave || pendingOperation !== null"
-      @click="saveVersion('resume')"
-    >
-      保存简历新版本
-    </button>
-    <h3>JD 版本</h3>
-    <p v-if="jdVersions.length === 0">暂无已确认 JD。</p>
-    <button
-      v-for="version in jdVersions"
-      :key="version.versionId"
-      type="button"
-      class="button-secondary"
-      :disabled="materialsBusy || !!pendingVersionSave"
-      :data-jd-version="version.versionNo"
-      @click="selectVersion('jd', version.versionId)"
-    >
-      查看JD第 {{ version.versionNo }} 版
-    </button>
-    <section v-if="selectedJd" aria-label="JD详情">
-      <h3>已确认 JD · 第 {{ selectedJd.versionNo }} 版</h3>
-      <p>JD版本ID：{{ selectedJd.versionId }} · {{ selectedJd.codepointCount }} 字符</p>
-      <pre>{{ selectedJd.body }}</pre>
-      <button
-        type="button"
-        class="button-secondary"
-        :disabled="materialsBusy || !!pendingVersionSave"
-        @click="jdDraft = selectedJd.body"
-      >
-        基于此JD版本编辑
-      </button>
-    </section>
-    <label for="jd-body">JD 草稿（50～10,000 个 Unicode 码点）</label>
-    <textarea
-      id="jd-body"
-      v-model="jdDraft"
-      rows="5"
-      :disabled="materialsBusy || !!pendingVersionSave"
-    />
-    <button
-      type="button"
-      class="button-primary"
-      :disabled="materialsBusy || !!pendingVersionSave || pendingOperation !== null"
-      @click="saveVersion('jd')"
-    >
-      确认并保存JD版本
-    </button>
+    <div class="version-columns">
+      <section aria-label="简历版本编辑">
+        <h3>
+          简历版本 <small v-if="versionsState === 'ready'">共 {{ resumeVersions.length }} 版</small>
+        </h3>
+        <button
+          v-for="version in resumeVersions"
+          :key="version.versionId"
+          type="button"
+          class="button-secondary"
+          :disabled="materialsBusy || !!pendingVersionSave"
+          :data-resume-version="version.versionNo"
+          @click="selectVersion('resume', version.versionId)"
+        >
+          查看简历第 {{ version.versionNo }} 版
+        </button>
+        <button
+          type="button"
+          class="button-secondary"
+          :disabled="materialsBusy || !!pendingVersionSave"
+          @click="resumeVersionDraft = materials.selected?.body ?? ''"
+        >
+          基于当前简历版本编辑
+        </button>
+        <label for="resume-version-body">简历新版本草稿（100～20,000 个 Unicode 码点）</label>
+        <textarea
+          id="resume-version-body"
+          v-model="resumeVersionDraft"
+          rows="5"
+          :disabled="materialsBusy || !!pendingVersionSave"
+        />
+        <p data-count="resume-version">
+          未保存草稿 · {{ materials.codepoints(resumeVersionDraft) }} / 20,000 码点<span
+            v-if="materials.codepoints(resumeVersionDraft) > 20000"
+            >（超出 {{ materials.codepoints(resumeVersionDraft) - 20000 }}）</span
+          >
+        </p>
+        <button
+          type="button"
+          class="button-primary"
+          :disabled="materialsBusy || !!pendingVersionSave || pendingOperation !== null"
+          @click="saveVersion('resume')"
+        >
+          保存简历新版本
+        </button>
+      </section>
+      <section aria-label="JD版本编辑">
+        <h3>
+          JD 版本 <small v-if="versionsState === 'ready'">共 {{ jdVersions.length }} 版</small>
+        </h3>
+        <p v-if="versionsState === 'ready' && jdVersions.length === 0">
+          暂无已确认 JD。粘贴目标岗位要求后单独确认保存。
+        </p>
+        <button
+          v-for="version in jdVersions"
+          :key="version.versionId"
+          type="button"
+          class="button-secondary"
+          :disabled="materialsBusy || !!pendingVersionSave"
+          :data-jd-version="version.versionNo"
+          @click="selectVersion('jd', version.versionId)"
+        >
+          查看JD第 {{ version.versionNo }} 版
+        </button>
+        <section v-if="selectedJd" aria-label="JD详情">
+          <h3>已确认 JD · 第 {{ selectedJd.versionNo }} 版</h3>
+          <p>历史版本只读，基于此版编辑将追加新版本。</p>
+          <p>JD版本ID：{{ selectedJd.versionId }} · {{ selectedJd.codepointCount }} 字符</p>
+          <pre>{{ selectedJd.body }}</pre>
+          <button
+            type="button"
+            class="button-secondary"
+            :disabled="materialsBusy || !!pendingVersionSave"
+            @click="jdDraft = selectedJd.body"
+          >
+            基于此JD版本编辑
+          </button>
+        </section>
+        <label for="jd-body">JD 草稿（50～10,000 个 Unicode 码点）</label>
+        <textarea
+          id="jd-body"
+          v-model="jdDraft"
+          rows="5"
+          :disabled="materialsBusy || !!pendingVersionSave"
+        />
+        <p data-count="jd">
+          未保存草稿 · {{ materials.codepoints(jdDraft) }} / 10,000 码点<span
+            v-if="materials.codepoints(jdDraft) > 10000"
+            >（超出 {{ materials.codepoints(jdDraft) - 10000 }}）</span
+          >
+        </p>
+        <button
+          type="button"
+          class="button-primary"
+          :disabled="materialsBusy || !!pendingVersionSave || pendingOperation !== null"
+          @click="saveVersion('jd')"
+        >
+          确认并保存JD版本
+        </button>
+      </section>
+    </div>
     <template v-if="pendingVersionSave">
       <p>原版本保存尚未核实，正文和操作标识已保留。请核实或沿用原操作重试。</p>
       <button

@@ -50,9 +50,16 @@ try {
     socket.addEventListener('error', reject, { once: true })
   })
   let nextId = 0
+  let acceptDialogs = true
+  let dialogCount = 0
   const pending = new Map()
   socket.addEventListener('message', (event) => {
     const message = JSON.parse(event.data)
+    if (message.method === 'Page.javascriptDialogOpening') {
+      dialogCount += 1
+      void send('Page.handleJavaScriptDialog', { accept: acceptDialogs }, message.sessionId)
+      return
+    }
     if (!message.id || !pending.has(message.id)) return
     const { resolve, reject } = pending.get(message.id)
     pending.delete(message.id)
@@ -68,10 +75,12 @@ try {
   }
   const { targetId } = await send('Target.createTarget', { url: `${base}/app` })
   const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true })
+  await send('Page.enable', {}, sessionId)
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false }, sessionId)
   async function evaluate(expression, targetSession = sessionId) {
     const result = await send(
       'Runtime.evaluate',
-      { expression, awaitPromise: true, returnByValue: true },
+      { expression, awaitPromise: true, returnByValue: true, userGesture: true },
       targetSession,
     )
     if (result.exceptionDetails) throw new Error('Browser page script failed')
@@ -126,6 +135,15 @@ try {
   }
 
   await login()
+  const accountARoot = await evaluate(`(async () => {
+    const me = await (await fetch('/api/auth/me')).json()
+    const csrf = await (await fetch('/api/auth/csrf')).json()
+    const saved = await fetch('/api/materials/resumes', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf.token,
+        'X-Expected-Account-Id': me.accountId, 'X-Operation-Id': crypto.randomUUID() },
+      body: JSON.stringify({ body: 'DT04 private A direct fixture '.repeat(6) }) })
+    return (await saved.json()).resumeId
+  })()`)
   const unsaved = '切窗未保存草稿' + 'U'.repeat(105)
   await evaluate(`(() => {
     const nativeFetch = window.fetch.bind(window)
@@ -659,7 +677,128 @@ try {
     Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('确认并保存简历')).click()
   })()`)
   await waitUntil(`document.querySelector('[aria-label="简历详情"] pre')?.textContent.startsWith('Pasted after parse failure')`, 'paste fallback saved')
-  process.stdout.write('P2-DT-01 real Chrome material checks passed.\nP2-DT-03 real Chrome upload checks passed.\n')
+  // P2-DT-04：精确草稿计数、离开取消和读取失败不冒充空数据。
+  await evaluate(`(() => { const input = document.querySelector('#resume-body'); input.value = ${JSON.stringify(' \t😀\r\nX \t')}; input.dispatchEvent(new Event('input', { bubbles: true })) })()`)
+  await waitUntil(`document.querySelector('[data-count="resume"]').textContent.includes('3 / 20,000')`, 'normalized draft count')
+  acceptDialogs = false
+  const beforeDialog = dialogCount
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '退出登录').click()`)
+  assert.ok(dialogCount > beforeDialog, 'dirty signout must ask before leaving')
+  await waitUntil(`!!document.querySelector('#resume-body') && document.querySelector('#resume-body').value.includes('😀')`, 'same-account draft after cancel and focus identity check')
+  assert.equal(await evaluate(`!!document.querySelector('#resume-body') && document.querySelector('#resume-body').value.includes('😀')`), true)
+  await evaluate(`window.dirtyRefreshSentinel = true`)
+  const beforeUnloadDialog = dialogCount
+  await send('Page.reload', {}, sessionId)
+  await delay(150)
+  assert.equal(await evaluate(`window.dirtyRefreshSentinel === true`), true, 'cancel refresh preserves draft document')
+  assert.ok(dialogCount > beforeUnloadDialog, 'dirty refresh must show a real beforeunload dialog')
+  await waitUntil(`!!document.querySelector('#resume-body')`, 'identity restored after cancelled refresh')
+  acceptDialogs = true
+  await evaluate(`(() => { const input = document.querySelector('#resume-body'); input.value = 'X'.repeat(20001); input.dispatchEvent(new Event('input', { bubbles: true })) })()`)
+  await waitUntil(`document.querySelector('[data-count="resume"]').textContent.includes('超出 1')`, 'untruncated over-limit count')
+  assert.equal(await evaluate(`document.querySelector('#resume-body').value.length`), 20001)
+  await evaluate(`(() => { const input = document.querySelector('#resume-body'); input.value = ''; input.dispatchEvent(new Event('input', { bubbles: true }));
+    const prior = window.fetch; window.uiPriorFetch = prior; window.uiFailList = true;
+    window.fetch = (input, init) => {
+      if (window.uiFailList && new URL(input, location.href).pathname === '/api/materials/resumes' && !init?.method) throw new TypeError('synthetic list interruption')
+      return prior(input, init)
+    };
+    Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '刷新列表').click()
+  })()`)
+  await waitUntil(`document.body.innerText.includes('简历列表加载失败')`, 'list failure is not empty')
+  assert.equal(await evaluate(`document.body.innerText.includes('暂无已保存简历。')`), false)
+  await evaluate(`window.uiFailList = false; Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '刷新列表').click()`)
+  await waitUntil(`!document.body.innerText.includes('简历列表加载失败') && !!document.querySelector('.material-list li')`, 'list retry')
+  await evaluate(`(() => { const prior = window.fetch; window.uiFailVersions = true;
+    window.fetch = (input, init) => { const p = new URL(input, location.href).pathname;
+      if (window.uiFailVersions && !init?.method && (p.endsWith('/versions') || p.endsWith('/jd-versions'))) throw new TypeError('synthetic version list interruption');
+      return prior(input, init) };
+    Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '刷新版本列表').click()
+  })()`)
+  await waitUntil(`document.body.innerText.includes('版本列表加载失败')`, 'version list failure')
+  await evaluate(`window.uiFailVersions = false; Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '刷新版本列表').click()`)
+  await waitUntil(`!document.body.innerText.includes('版本列表加载失败') && !!document.querySelector('[data-resume-version]')`, 'version list recovery')
+  await waitUntil(`!document.body.innerText.includes('网络异常，暂时无法核实请求结果')`, 'recovered reads clear stale failure messages')
+  const historyShot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }, sessionId)
+  fs.writeFileSync(path.resolve('../.cache/p2dt04-history.png'), Buffer.from(historyShot.data, 'base64'))
+
+  // 未决 JD 已提交但回包/核实失败；另一窗口删除原根后，用本人删除回执终止旧入口。
+  const deletedVersionRoot = await evaluate(`(async () => (await (await fetch('/api/materials/resumes')).json())[0].resumeId)()`)
+  await evaluate(`(() => { const prior = window.fetch; window.uiVersionLookupFails = true;
+    window.fetch = async (input, init) => {
+      const p = new URL(input, location.href).pathname;
+      if (window.uiVersionLookupFails && p.includes('/jd-operations/')) throw new TypeError('synthetic lost lookup');
+      const response = await prior(input, init);
+      if (init?.method === 'POST' && p.endsWith('/jd-versions') && response.ok) return { ok: true, json: async () => { throw new TypeError('synthetic lost body') } };
+      return response
+    };
+    const input = document.querySelector('#jd-body'); input.value = 'DT04 unknown JD '.repeat(6); input.dispatchEvent(new Event('input', { bubbles: true }));
+    Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '确认并保存JD版本').click()
+  })()`)
+  await waitUntil(`document.body.innerText.includes('暂时无法确认版本是否保存')`, 'unknown JD before remote delete')
+  assert.equal(await evaluate(`(async () => { const me = await (await fetch('/api/auth/me')).json(); const csrf = await (await fetch('/api/auth/csrf')).json();
+    return (await fetch('/api/materials/resumes/${deletedVersionRoot}', { method: 'DELETE', headers: { 'X-CSRF-TOKEN': csrf.token, 'X-Expected-Account-Id': me.accountId } })).status
+  })()`, otherSession), 200)
+  await evaluate(`window.uiVersionLookupFails = false; Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '核实版本保存结果').click()`)
+  await waitUntil(`!document.querySelector('#jd-body') && !!document.querySelector('[data-cleanup-state]')`, 'remote deletion terminates pending version')
+  assert.equal(await evaluate(`document.body.innerText.includes('沿用原操作重试版本')`), false)
+
+  await send('Page.navigate', { url: `${base}/app/resumes/${accountARoot}` }, sessionId)
+  await waitUntil(`document.body.innerText.includes('不存在或无权访问此记录')`, 'other-account direct navigation')
+  assert.equal(await evaluate(`document.body.innerText.includes('DT04 private A direct fixture')`), false)
+
+  // 真实目录阻碍保持 PENDING；界面仅展示服务端回执，不伪造具体故障类别。
+  const cleanupRoot = process.env.P2_CLEANUP_RESUME
+  const blocking = process.env.P2_CLEANUP_BLOCK
+  assert.ok(cleanupRoot && blocking)
+  assert.ok(path.resolve(blocking).startsWith(path.resolve('../.cache') + path.sep), 'cleanup fixture must stay inside project cache')
+  await send('Page.navigate', { url: `${base}/app/resumes/${cleanupRoot}` }, sessionId)
+  await waitUntil(`!!document.querySelector('[data-delete-selected]') && !document.querySelector('[data-delete-selected]').disabled`, 'cleanup fixture direct view')
+  await evaluate(`(() => { const prior = window.fetch; window.uiMissingCount = true;
+    window.fetch = async (input, init) => { const response = await prior(input, init);
+      if (window.uiMissingCount && new URL(input, location.href).pathname.endsWith('/deletion-impact') && response.ok) {
+        const body = await response.json(); delete body.fileCount; return { ok: true, json: async () => body }
+      }
+      return response
+    };
+    document.querySelector('[data-delete-selected]').click()
+  })()`)
+  await waitUntil(`document.body.innerText.includes('删除范围响应格式无法识别')`, 'missing count does not default to zero')
+  assert.equal(await evaluate(`!!document.querySelector('[aria-label="确认删除简历"]')`), false)
+  await evaluate(`window.uiMissingCount = false`)
+  await evaluate(`document.querySelector('[data-delete-selected]').click()`)
+  await waitUntil(`!!document.querySelector('[aria-label="确认删除简历"]')`, 'real deletion impact')
+  assert.equal(await evaluate(`document.querySelector('[aria-label="确认删除简历"]').textContent.includes('1 份原文件/暂存')`), true)
+  await evaluate(`Array.from(document.querySelectorAll('[aria-label="确认删除简历"] button')).find(b => b.textContent.trim() === '取消').click()`)
+  assert.equal(await evaluate(`(async () => (await fetch('/api/materials/resumes/${cleanupRoot}')).status)()`), 200)
+  await evaluate(`document.querySelector('[data-delete-selected]').click()`)
+  await waitUntil(`!!document.querySelector('[aria-label="确认删除简历"]')`, 'second delete confirmation')
+  await evaluate(`Array.from(document.querySelectorAll('[aria-label="确认删除简历"] button')).find(b => b.textContent.trim() === '确认删除').click()`)
+  await waitUntil(`!!document.querySelector('[data-cleanup-state="PENDING"]') && !document.querySelector('[aria-label="简历详情"]')`, 'pending cleanup prohibits access')
+  assert.equal(await evaluate(`(async () => (await fetch('/api/materials/resumes/${cleanupRoot}')).status)()`), 404)
+  assert.equal(await evaluate(`Array.from(document.querySelectorAll('button')).some(b => b.textContent.includes('恢复删除'))`), false)
+  await send('Page.reload', {}, sessionId)
+  await waitUntil(`!!document.querySelector('[data-cleanup-state="PENDING"]')`, 'pending cleanup survives reload through server receipt')
+  await evaluate(`(() => { const prior = window.fetch; window.cleanupFetch = prior;
+    window.fetch = (input, init) => { if (new URL(input, location.href).pathname.endsWith('/deletion')) throw new TypeError('synthetic cleanup lookup interruption'); return prior(input, init) };
+    document.querySelector('[data-cleanup-state="PENDING"] button').click()
+  })()`)
+  await waitUntil(`document.body.innerText.includes('保留上次回执')`, 'cleanup lookup failure preserves pending receipt')
+  assert.equal(await evaluate(`!!document.querySelector('[data-cleanup-state="PENDING"]')`), true)
+  await evaluate(`window.fetch = window.cleanupFetch`)
+  const pendingShot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }, sessionId)
+  fs.writeFileSync(path.resolve('../.cache/p2dt04-cleanup-pending.png'), Buffer.from(pendingShot.data, 'base64'))
+  fs.unlinkSync(path.join(blocking, 'sentinel'))
+  try { fs.rmdirSync(blocking) } catch (error) { if (error.code !== 'ENOENT') throw error }
+  // 已确认文件仍保留解析截止＋5秒退出保护；观察窗口覆盖完整35秒，不改业务期限。
+  for (let n = 0; n < 300; n += 1) {
+    await evaluate(`document.querySelector('[data-cleanup-state="PENDING"] button')?.click()`)
+    if (await evaluate(`!!document.querySelector('[data-cleanup-state="CLEANED"]') && !document.querySelector('[data-cleanup-state="PENDING"]')`)) break
+    await delay(150)
+  }
+  await waitUntil(`!document.querySelector('[data-cleanup-state="PENDING"]') && !!document.querySelector('[data-cleanup-state="CLEANED"]')`, 'cleanup completion receipt')
+  assert.equal(await evaluate(`document.documentElement.scrollWidth <= innerWidth`), true, '1280px desktop must not overflow horizontally')
+  process.stdout.write('P2-DT-01 real Chrome material checks passed.\nP2-DT-03 real Chrome upload checks passed.\nP2-DT-04 real Chrome page checks passed.\n')
 } finally {
   socket?.close()
   browser.kill()

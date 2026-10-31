@@ -291,13 +291,17 @@ export function deletionImpact(resumeId: string): Promise<DeletionImpact> {
     `/api/materials/resumes/${encodeURIComponent(resumeId)}/deletion-impact`,
     (payload) => {
       const value = requireRecord(payload)
-      if (typeof value.versionCount !== 'number' || typeof value.jdVersionCount !== 'number') {
+      if (
+        typeof value.versionCount !== 'number' ||
+        typeof value.jdVersionCount !== 'number' ||
+        typeof value.fileCount !== 'number'
+      ) {
         throw new ApiError(null, 'INVALID_RESPONSE', '删除范围响应格式无法识别')
       }
       return {
         versionCount: value.versionCount,
         jdVersionCount: value.jdVersionCount,
-        fileCount: typeof value.fileCount === 'number' ? value.fileCount : 0,
+        fileCount: value.fileCount,
       }
     },
   )
