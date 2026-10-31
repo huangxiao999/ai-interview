@@ -109,6 +109,7 @@ async function saveVersion(kind: VersionKind): Promise<void> {
   // 新建结果未决时，其恢复可能切换资料根；先核实它，避免产生第二个未决版本操作。
   if (
     materialsBusy.value ||
+    materials.pendingUpload !== null ||
     pendingOperation.value !== null ||
     session.status !== 'authenticated' ||
     !session.identity

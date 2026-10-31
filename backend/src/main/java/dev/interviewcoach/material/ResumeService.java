@@ -127,11 +127,12 @@ final class ResumeService {
         requireTrial(actor);
         return transaction.execute(status -> {
             requireActiveRoot(actor, resumeId);
-            return new DeletionImpact(repository.countVersions(resumeId), repository.countJdVersions(resumeId));
+            return new DeletionImpact(repository.countVersions(resumeId), repository.countJdVersions(resumeId),
+                    repository.countFiles(resumeId));
         });
     }
 
-    record DeletionImpact(int versionCount, int jdVersionCount) {
+    record DeletionImpact(int versionCount, int jdVersionCount, int fileCount) {
     }
 
     ResumeRepository.Deletion delete(Actor actor, UUID expectedAccountId, UUID resumeId) {

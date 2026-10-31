@@ -16,6 +16,7 @@ export interface ResumeDetail extends ResumeSummary {
 export interface DeletionImpact {
   versionCount: number
   jdVersionCount: number
+  fileCount: number
 }
 
 export interface DeletionStatus {
@@ -90,7 +91,7 @@ export interface MaterialWriteOwner {
   isCurrent: () => boolean
 }
 
-async function materialWriteRequest(
+export async function materialWriteRequest(
   path: string,
   init: RequestInit,
   owner: MaterialWriteOwner,
@@ -114,6 +115,121 @@ async function materialWriteRequest(
     if (error instanceof ApiError && error.code === 'CSRF_INVALID') clearCsrf()
     throw error
   }
+}
+
+export interface UploadStatus {
+  uploadId: string
+  operationId: string
+  resumeId: string | null
+  name: string
+  state: string
+  body: string | null
+  errorCode: string | null
+  versionId: string | null
+}
+
+function parseUpload(payload: unknown): UploadStatus {
+  const v = requireRecord(payload)
+  if (
+    typeof v.uploadId !== 'string' ||
+    typeof v.operationId !== 'string' ||
+    typeof v.name !== 'string' ||
+    typeof v.state !== 'string' ||
+    (v.resumeId !== null && typeof v.resumeId !== 'string') ||
+    (v.body !== null && typeof v.body !== 'string') ||
+    (v.errorCode !== null && typeof v.errorCode !== 'string') ||
+    (v.versionId !== null && typeof v.versionId !== 'string')
+  ) {
+    throw new ApiError(null, 'RESULT_UNKNOWN', '无法核实上传结果')
+  }
+  return v as unknown as UploadStatus
+}
+
+export function getUploadOperation(operation: string): Promise<UploadStatus> {
+  return getJson(`/api/materials/uploads/operations/${encodeURIComponent(operation)}`, parseUpload)
+}
+
+export function getVersionUpload(versionId: string): Promise<UploadStatus> {
+  return getJson(`/api/materials/uploads/versions/${encodeURIComponent(versionId)}`, parseUpload)
+}
+
+export function getUploadConfirmedVersion(upload: UploadStatus): Promise<ResumeDetail> {
+  if (upload.state !== 'CONFIRMED' || !upload.resumeId || !upload.versionId) {
+    throw new ApiError(409, 'UPLOAD_NOT_READY', '此上传尚未确认版本')
+  }
+  return getJson(
+    `/api/materials/resumes/${encodeURIComponent(upload.resumeId)}/versions/${encodeURIComponent(upload.versionId)}`,
+    parseDetail,
+  )
+}
+
+export function listUploadDrafts(): Promise<UploadStatus[]> {
+  return getJson('/api/materials/uploads', (payload: unknown) => {
+    if (!Array.isArray(payload)) throw new ApiError(null, 'INVALID_RESPONSE', '无法核实上传列表')
+    return payload.map(parseUpload)
+  })
+}
+
+export async function uploadFile(
+  file: File,
+  root: string | null,
+  operation: string,
+  owner: MaterialWriteOwner,
+): Promise<UploadStatus> {
+  const form = new FormData()
+  form.append('file', file)
+  if (root) form.append('resumeId', root)
+  return readSuccess(
+    await materialWriteRequest(
+      '/api/materials/uploads',
+      {
+        method: 'POST',
+        headers: { ...(await csrfHeader()), 'X-Operation-Id': operation },
+        body: form,
+      },
+      owner,
+    ),
+    parseUpload,
+  )
+}
+
+export async function confirmUpload(
+  id: string,
+  body: string,
+  operation: string,
+  owner: MaterialWriteOwner,
+): Promise<ResumeDetail> {
+  return readSuccess(
+    await materialWriteRequest(
+      `/api/materials/uploads/${encodeURIComponent(id)}/confirmation`,
+      {
+        method: 'POST',
+        headers: {
+          ...(await csrfHeader()),
+          'X-Operation-Id': operation,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ body }),
+      },
+      owner,
+    ),
+    parseDetail,
+  )
+}
+
+export async function cancelUpload(id: string, owner: MaterialWriteOwner): Promise<void> {
+  await materialWriteRequest(
+    `/api/materials/uploads/${encodeURIComponent(id)}`,
+    {
+      method: 'DELETE',
+      headers: { ...(await csrfHeader()) },
+    },
+    owner,
+  )
+}
+
+export async function downloadUpload(id: string): Promise<Blob> {
+  return (await request(`/api/materials/uploads/${encodeURIComponent(id)}/original`)).blob()
 }
 
 export async function listResumes(): Promise<ResumeSummary[]> {
@@ -178,7 +294,11 @@ export function deletionImpact(resumeId: string): Promise<DeletionImpact> {
       if (typeof value.versionCount !== 'number' || typeof value.jdVersionCount !== 'number') {
         throw new ApiError(null, 'INVALID_RESPONSE', '删除范围响应格式无法识别')
       }
-      return { versionCount: value.versionCount, jdVersionCount: value.jdVersionCount }
+      return {
+        versionCount: value.versionCount,
+        jdVersionCount: value.jdVersionCount,
+        fileCount: typeof value.fileCount === 'number' ? value.fileCount : 0,
+      }
     },
   )
 }

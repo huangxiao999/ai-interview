@@ -46,7 +46,8 @@ try {
     $manifest | ConvertTo-Json | Set-Content -LiteralPath '.cache/dt01-test-run.json' -Encoding UTF8
     Write-Output "Isolated verification database: $testDatabase (retained for inspection)."
     Set-Location (Join-Path $projectRoot 'backend')
-    ./mvnw.cmd '-Dmaven.repo.local=../.cache/maven-repository' -B -ntp -Pdatabase-verification verify *> $logPath
+    ./mvnw.cmd '-Dmaven.repo.local=../.cache/maven-repository' -B -ntp -Pdatabase-verification `
+        '-Dit.test=PersistenceFoundationIT' verify *> $logPath
     $verificationExit = $LASTEXITCODE
     $manifest['status'] = if ($verificationExit -eq 0) { 'passed' } else { 'failed' }
     $manifest['exitCode'] = $verificationExit

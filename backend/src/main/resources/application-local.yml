@@ -1,5 +1,14 @@
 # Commands are run from backend/. The shared root .env uses Java-properties-compatible KEY=VALUE lines.
+material:
+  private-root: ${PRIVATE_FILE_ROOT:../.local-data/private}
 spring:
+  servlet:
+    multipart:
+      max-file-size: 10000000B
+      max-request-size: 10100000B
+      location: ${material.private-root:../.local-data/private}/multipart
+      # 合法文件先在有上限的内存缓冲；应用持久意图提交后才写入私有介质。
+      file-size-threshold: 10000000B
   config:
     import: "optional:file:../.env[.properties]"
   datasource:

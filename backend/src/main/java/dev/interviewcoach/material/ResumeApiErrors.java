@@ -12,12 +12,26 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-@RestControllerAdvice(assignableTypes = ResumeApi.class)
+@RestControllerAdvice(assignableTypes = {ResumeApi.class, UploadApi.class})
 final class ResumeApiErrors {
 
     @ExceptionHandler(InvalidMaterial.class)
     ResponseEntity<ErrorBody> invalid(InvalidMaterial ex) {
         return error(HttpStatus.BAD_REQUEST, "INVALID_INPUT", ex.getMessage());
+    }
+
+    @ExceptionHandler(UploadNotReady.class)
+    ResponseEntity<ErrorBody> uploadNotReady() {
+        return error(HttpStatus.CONFLICT, "UPLOAD_NOT_READY", "文件尚未解析成功，请核实状态或改用粘贴正文");
+    }
+
+    @ExceptionHandler(java.io.IOException.class)
+    ResponseEntity<ErrorBody> fileFailure() {
+        return error(HttpStatus.SERVICE_UNAVAILABLE, "RESULT_UNKNOWN", "暂时无法核实文件操作，请查询原操作");
+    }
+    @ExceptionHandler(UploadFileUnavailable.class)
+    ResponseEntity<ErrorBody> confirmationFileFailure() {
+        return error(HttpStatus.SERVICE_UNAVAILABLE, "FILE_UNAVAILABLE", "原文件暂时不可读，尚未确认新版本；请核实状态或放弃上传后粘贴正文");
     }
 
     @ExceptionHandler({HttpMessageNotReadableException.class, MissingRequestHeaderException.class,
@@ -57,5 +71,21 @@ final class ResumeApiErrors {
     }
 
     record ErrorBody(String code, String message) {
+    }
+}
+
+// Multipart 在选择 Controller 前就可能失败，必须覆盖该阶段，避免错误转发被认证链改写为 403。
+@RestControllerAdvice
+class UploadLimitErrors {
+    @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+    ResponseEntity<ResumeApiErrors.ErrorBody> tooLarge() {
+        return ResponseEntity.status(413).cacheControl(CacheControl.noStore())
+                .body(new ResumeApiErrors.ErrorBody("FILE_TOO_LARGE", "文件不能超过 10,000,000 字节"));
+    }
+    @ExceptionHandler({org.springframework.web.multipart.MultipartException.class,
+            org.springframework.web.multipart.support.MissingServletRequestPartException.class})
+    ResponseEntity<ResumeApiErrors.ErrorBody> malformedMultipart() {
+        return ResponseEntity.badRequest().cacheControl(CacheControl.noStore())
+                .body(new ResumeApiErrors.ErrorBody("INVALID_INPUT", "上传请求格式不正确"));
     }
 }

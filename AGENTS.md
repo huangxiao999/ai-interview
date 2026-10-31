@@ -22,7 +22,7 @@
 | 页面参考 | [参考图目录](docs/design-references-v1/)；图中数据和布局不替代业务规则 |
 | 工程环境、启动与基础检查 | [README](README.md)；实际依赖以 backend/pom.xml、Maven Wrapper 和 frontend/package-lock.json 为准，验证边界见 README |
 | 当前环境、首片详细设计与开发任务 | [ENVIRONMENT_VERIFICATION](docs/开发环境调整与基础验证.md)、[FIRST_SLICE_DESIGN](docs/首个业务切片详细设计.md)、[DEVELOPMENT_PLAN](docs/开发计划.md)、[DT01_VERIFICATION](<docs/DT-01 版本化持久化基础：实现与验证记录.md>)、[DT02_VERIFICATION](<docs/DT-02 账号与受控开通：实现与验证记录.md>)、[DT03_VERIFICATION](<docs/DT-03 会话认证与最小API：实现与验证记录.md>)、[DT04_VERIFICATION](<docs/DT-04 重置与会话撤销：实现与验证记录.md>)、[DT05_VERIFICATION](<docs/DT-05 最小登录前端：实现与验证记录.md>)、[DT06_VERIFICATION](<docs/DT-06 浏览器与恢复闭环：实现与验证记录.md>)、[DT07_REVIEW](<docs/DT-07 账号切片审查与证据登记.md>)；DT-01/03～07已完成各自范围，DT-02两项 P2 修复已复审、部分证据待补，完整FS-A及PF/VP状态按证据范围判断 |
-| P2 资料与版本设计、任务 | [详细设计](<docs/P2 资料与版本详细设计.md>)、[P2-DT-01～05任务](<docs/P2 资料与版本开发任务.md>)、[P2-DT-01记录](<docs/P2-DT-01 粘贴简历私有闭环：实现与验证记录.md>)、[P2-DT-02记录](<docs/P2-DT-02 JD确认与资料版本：实现与验证记录.md>)；P2-DT-01 已合并，P2-DT-02 本地实施验证完成、待 PR，P2 阶段未验收 |
+| P2 资料与版本设计、任务 | [详细设计](<docs/P2 资料与版本详细设计.md>)、[P2-DT-01～05任务](<docs/P2 资料与版本开发任务.md>)、[P2-DT-01记录](<docs/P2-DT-01 粘贴简历私有闭环：实现与验证记录.md>)、[P2-DT-02记录](<docs/P2-DT-02 JD确认与资料版本：实现与验证记录.md>)；P2-DT-01/02 已合并；P2-DT-03 本地实施与验证，当前状态见文件记录，待审阅/CI/复审；P2 阶段未验收 |
 
 - 区分已确认规则、建模/技术建议、待决项和实施待核实事实；“文档已写完”不代表方案已确认或产品已通过。
 - 后续已确认补充也属于依据，特别检查 CF、DACC、TD、PF 的适用内容；不能只读早期 PRD 而遗漏确认记录。
@@ -127,7 +127,7 @@
 - DT-07已核查当前账号入口、规则所有权、版本与迁移边界，并登记DT-01～06既有隔离证据和未覆盖项；本轮后端6项基础测试及前端`npm.cmd run check`复测通过，开发库只读核查账号/权限/会话0行。详见[DT-07记录](<docs/DT-07 账号切片审查与证据登记.md>)。DT-02补证、真实私有资源隔离及完整FS-A/ACC/PF/VP继续开放。
 - P2-DT-01在根目录执行 `& './scripts/Verify-P2Resume.ps1'`，每次新建并保留隔离PG16库；预期账号与CSRF等待竞态修复后，最新运行9项真实PG/HTTP/Chrome集成检查通过，前端在`frontend/`执行`npm.cmd run check`。V3为简历正文、版本与删除屏障；开发库尚未执行V3。该任务只证明当前正文私有闭环，不代表PDF/DOCX、JD、完整删除或PF/VP通过。证据见[P2-DT-01记录](<docs/P2-DT-01 粘贴简历私有闭环：实现与验证记录.md>)。
 - P2-DT-02 扩展同一 `Verify-P2Resume.ps1`：2026-10-31 在新隔离库运行 15 项 PG/HTTP/Chrome 检查通过，基础 6 项及前端 check 通过。简历/JD 的版本序列和操作身份按根与种类分别维护；原操作查询不得读最新版本。未决版本操作在 Pinia 固定目标、种类、正文和操作 ID，预检失败继续保留。当前版本字段/错误码和迁移证据见[P2-DT-02记录](<docs/P2-DT-02 JD确认与资料版本：实现与验证记录.md>)；该日开发库只读核实仍为 V1/V2，勿将测试库迁移冒充开发库已迁移。
-- Compose及只读SQL命令见README/DT01_VERIFICATION，保留PG16卷，不执行down -v。infra/postgres中的001仅初始化vector；verify和verify-persistence为只读审计，不自动建业务表。私有文件规划仍为.local-data/private，未实现存储。秘密、用户资料、缓存、日志、备份及产物按忽略规则管理。
+- Compose及只读SQL命令见README/DT01_VERIFICATION，保留PG16卷，不执行down -v。infra/postgres中的001仅初始化vector；verify和verify-persistence为只读审计，不自动建业务表。P2-DT-03 已实现受控私有文件，默认 .local-data/private，路径、权限与验证见文件记录。秘密、用户资料、缓存、日志、备份及产物按忽略规则管理。
 - README 记录环境、详细命令、已执行结果及未验证项；基础测试不是 PF/VP 或 AI 质量验收。后续新增业务时补相关层次验证，不能只提供一条笼统测试命令冒充全部 PF 证明。
 - 修改前检查实际工作区及任务相关约定，保留已有改动；按用户目标实现可验证的小步闭环，功能或契约变化同步对应需求/设计/验收。遇到技术验证失败先修复或说明缺口，不擅自放宽业务规则。
 - 保留长期有效且项目特有的约定；临时任务细节放任务提示词，完整方案与证据放对应文档。有实际局部差异时再增加目录级 AGENTS.md，移除过时或冲突指令。
@@ -146,3 +146,11 @@ Postman CLI is installed on this device, and can be used for API Engineering wor
 - 每条问题指出触发条件、实际行为、违反的已确认规则或可能后果，并给出可执行的修复方向及必要的回归测试；标明对应文件和行号。无法从代码或证据确认时说明不确定性，不把猜测写成已复现缺陷。
 - 优先审查本项目的身份与权限、用户数据隔离、会话与 CSRF、固定版本、面试进度、额度结算、报告发布及关联删除；对照适用的 PRD、ACC/DACC、CB/SC 和 PF，不因 CI 通过就推断真实 PostgreSQL、浏览器或业务验收已通过。
 - 审查范围以 PR 变更及其必要上下文为主；格式、类型和其他确定性检查交给 CI。不要为当前 PR 无关的后续功能提出阻塞性要求。
+
+## P2-DT-03 增量约定
+
+- 文件能力与证据入口：[P2-DT-03记录](<docs/P2-DT-03 受控文件与解析：实现与验证记录.md>)；新增 V5，不改 V1～V4。P2-DT-02 已由 PR #12 合并，历史待 PR 状态不再代表当前基线。
+- 2026-10-31 的 P2-DT-03 本地实现与适用验证完成：9项基础/文件、23项PG/HTTP/Chrome、6项持久化回归及前端check通过，仍待CI和独立复审；不关闭完整P2/ACC/PF/VP。
+- 根目录 `& './scripts/Verify-P2Upload.ps1'` 复用资料隔离套件；持久化基础脚本只选择 `PersistenceFoundationIT`，其他套件必须由各自隔离脚本运行，不取消数据库隔离保护。最终命令与结果见记录。
+- 原文件以登记 UUID 定位，原请求的 target_resume_id 与确认后绑定的 resume_id 含义不同，幂等比较不得混用。文件与版本绑定共同提交，文件系统发布/删除在事务外，未知结果先核实原登记。
+- 解析子进程只传必要环境，临时目录也受登记和删除追踪。退出保护期内不把清理记录标成 CLEANED；保持单活动应用执行者假设。`AccountWriteGuard.lockCurrentAccount` 仅供已接受后台工作取当前账号锁，用户写请求必须用 `requireCurrent` 比较观察到的凭证代次和权限。

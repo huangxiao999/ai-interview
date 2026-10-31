@@ -558,7 +558,108 @@ try {
   await waitUntil(`window.p2Race.writeCount === 0 && document.querySelector('#resume-body')`,
     'old A save rejected after B login')
   assert.equal(await evaluate(`document.body.innerText.includes(${JSON.stringify(raceBody)})`), false)
-  process.stdout.write('P2-DT-01 real Chrome material checks passed.\n')
+  // P2-DT-03：真实文件选择、解析核对、同账号切窗、确认正文流丢失后沿用原操作。
+  // 前一案例刻意挂起所有 CSRF 请求，刷新隔离该故障夹具，避免污染后续上传。
+  await send('Page.reload', {}, sessionId)
+  const uploadFixture = process.env.P2_UPLOAD_FIXTURE
+  assert.ok(uploadFixture && fs.existsSync(uploadFixture), 'Synthetic DOCX fixture is required')
+  await waitUntil(`!!document.querySelector('input[type=file]') && !document.querySelector('input[type=file]').disabled`, 'upload input')
+  const { root: dom } = await send('DOM.getDocument', {}, sessionId)
+  const { nodeId: fileNode } = await send('DOM.querySelector', { nodeId: dom.nodeId, selector: 'input[type=file]' }, sessionId)
+  await send('DOM.setFileInputFiles', { nodeId: fileNode, files: [uploadFixture] }, sessionId)
+  await waitUntil(`document.body.innerText.includes('文件：synthetic.docx')`, 'durable upload')
+  for (let n = 0; n < 60; n += 1) {
+    await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '核实上传与解析状态').click()`)
+    await delay(200)
+    if (await evaluate(`!!document.querySelector('[data-upload-state="READY"]')`)) break
+  }
+  await waitUntil(`!!document.querySelector('[data-upload-state="READY"]')`, 'parsed DOCX')
+  await send('Page.reload', {}, sessionId)
+  await waitUntil(`!!Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '查找未完成上传')`, 'upload recovery after reload')
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '查找未完成上传').click()`)
+  await waitUntil(`!!Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '恢复核对或放弃' && !b.disabled)`, 'persisted upload draft')
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '恢复核对或放弃').click()`)
+  assert.equal(await evaluate(`document.querySelector('[aria-label="文件简历上传"] textarea').value.includes('Browser synthetic resume')`), true)
+  await evaluate(`(() => {
+    const text = document.querySelector('[aria-label="文件简历上传"] textarea')
+    text.value = 'Verified browser upload ' + 'U'.repeat(120)
+    text.dispatchEvent(new Event('input', { bubbles: true }))
+    window.dispatchEvent(new Event('focus'))
+  })()`)
+  await waitUntil(`!!document.querySelector('[aria-label="文件简历上传"] textarea')`, 'same account restores upload draft')
+  assert.equal(await evaluate(`document.querySelector('[aria-label="文件简历上传"] textarea').value.startsWith('Verified browser upload')`), true)
+  await evaluate(`(() => {
+    const original = window.fetch.bind(window)
+    let lose = true
+    window.uploadProof = { calls: 0, status: null }
+    window.fetch = async (...args) => {
+      const response = await original(...args)
+      if (String(args[0]).endsWith('/confirmation')) { window.uploadProof.calls++; window.uploadProof.status = response.status }
+      if (lose && String(args[0]).endsWith('/confirmation') && response.ok) {
+        lose = false
+        return new Response(new ReadableStream({ start(controller) { controller.error(new TypeError('synthetic body loss')) } }), { status: 200 })
+      }
+      return response
+    }
+    Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '确认正文并保存版本').click()
+  })()`)
+  await waitUntil(`!!Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '核实并沿用原确认操作' && !b.disabled)`, 'unknown confirmation retained').catch(async () => {
+    throw new Error('Confirmation diagnostic: ' + JSON.stringify(await evaluate(`({ proof: window.uploadProof, path: location.pathname, buttons: Array.from(document.querySelectorAll('[aria-label="文件简历上传"] button')).map(b => ({label:b.textContent.trim(),disabled:b.disabled})) })`)))
+  })
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '核实并沿用原确认操作').click()`)
+  await waitUntil(`!document.body.innerText.includes('文件：synthetic.docx') && document.body.innerText.includes('Verified browser upload')`, 'original confirmation reconciled')
+  // 同一上传由另一窗口先确认时，原窗口只能打开固定版本，不能再次确认或丢失恢复出口。
+  const { root: secondDom } = await send('DOM.getDocument', {}, sessionId)
+  const { nodeId: secondInput } = await send('DOM.querySelector', { nodeId: secondDom.nodeId, selector: 'input[type=file]' }, sessionId)
+  await send('DOM.setFileInputFiles', { nodeId: secondInput, files: [uploadFixture] }, sessionId)
+  await waitUntil(`document.body.innerText.includes('文件：synthetic.docx')`, 'second upload')
+  for (let n = 0; n < 60; n += 1) {
+    await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '核实上传与解析状态').click()`)
+    await delay(200)
+    if (await evaluate(`!!document.querySelector('[data-upload-state="READY"]')`)) break
+  }
+  assert.equal(await evaluate(`(async () => {
+    const uploads = await (await fetch('/api/materials/uploads')).json()
+    const upload = uploads.find(u => u.name === 'synthetic.docx' && u.state === 'READY')
+    const me = await (await fetch('/api/auth/me')).json()
+    const csrf = await (await fetch('/api/auth/csrf')).json()
+    const response = await fetch('/api/materials/uploads/' + upload.uploadId + '/confirmation', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf.token,
+        'X-Expected-Account-Id': me.accountId, 'X-Operation-Id': crypto.randomUUID() },
+      body: JSON.stringify({ body: 'Confirmed in another window '.repeat(6) }) })
+    return response.status
+  })()`, otherSession), 200)
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '核实上传与解析状态').click()`)
+  await waitUntil(`!!Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '查看已确认版本并结束核对' && !b.disabled)`, 'other window confirmation outlet')
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '查看已确认版本并结束核对').click()`)
+  await waitUntil(`!document.body.innerText.includes('文件：synthetic.docx') && document.querySelector('[aria-label="简历详情"] pre')?.textContent.startsWith('Confirmed in another window')`, 'fixed version from other window')
+  const failedFixture = process.env.P2_FAILED_UPLOAD_FIXTURE
+  assert.ok(failedFixture && fs.existsSync(failedFixture), 'Synthetic malformed PDF is required')
+  await waitUntil(`!!document.querySelector('#jd-body')`, 'JD draft before failed upload')
+  await evaluate(`(() => {
+    const input = document.querySelector('#jd-body'); input.value = 'Retained JD draft ' + 'J'.repeat(60)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  const { root: failedDom } = await send('DOM.getDocument', {}, sessionId)
+  const { nodeId: failedInput } = await send('DOM.querySelector', { nodeId: failedDom.nodeId, selector: 'input[type=file]' }, sessionId)
+  await send('DOM.setFileInputFiles', { nodeId: failedInput, files: [failedFixture] }, sessionId)
+  await waitUntil(`document.body.innerText.includes('文件：broken.pdf')`, 'malformed upload registered')
+  for (let n = 0; n < 60; n += 1) {
+    await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '核实上传与解析状态').click()`)
+    await delay(200)
+    if (await evaluate(`!!document.querySelector('[data-upload-state="FAILED"]')`)) break
+  }
+  await waitUntil(`!!document.querySelector('[data-upload-state="FAILED"]')`, 'malformed parser failure')
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '放弃上传，改用粘贴正文').click()`)
+  await waitUntil(`!document.body.innerText.includes('文件：broken.pdf') && !document.querySelector('#resume-body').disabled`, 'paste fallback enabled')
+  assert.equal(await evaluate(`document.querySelector('#jd-body').value.startsWith('Retained JD draft')`), true)
+  await evaluate(`(() => {
+    const input = document.querySelector('#resume-body'); input.value = 'Pasted after parse failure ' + 'F'.repeat(120)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('确认并保存简历')).click()
+  })()`)
+  await waitUntil(`document.querySelector('[aria-label="简历详情"] pre')?.textContent.startsWith('Pasted after parse failure')`, 'paste fallback saved')
+  process.stdout.write('P2-DT-01 real Chrome material checks passed.\nP2-DT-03 real Chrome upload checks passed.\n')
 } finally {
   socket?.close()
   browser.kill()
