@@ -25,6 +25,7 @@ const {
   resumeVersionDraft,
   jdDraft,
   pendingVersionSave,
+  pendingOperation,
   versionMessage,
 } = storeToRefs(materials)
 
@@ -105,7 +106,14 @@ async function acceptResult(detail: ResumeDetail, kind: VersionKind): Promise<vo
 }
 
 async function saveVersion(kind: VersionKind): Promise<void> {
-  if (materialsBusy.value || session.status !== 'authenticated' || !session.identity) return
+  // 新建结果未决时，其恢复可能切换资料根；先核实它，避免产生第二个未决版本操作。
+  if (
+    materialsBusy.value ||
+    pendingOperation.value !== null ||
+    session.status !== 'authenticated' ||
+    !session.identity
+  )
+    return
   const retrying = pendingVersionSave.value !== null
   if (!pendingVersionSave.value) {
     pendingVersionSave.value = {
@@ -174,6 +182,9 @@ async function verifyVersion(): Promise<void> {
   <section class="material-detail" aria-label="资料历史版本">
     <h2>资料版本</h2>
     <p>确认修改会追加新版本，历史正文保持不变。保存资料不代表已通过岗位语义分析。</p>
+    <p v-if="pendingOperation" role="status">
+      新建简历的保存结果尚未核实，请先核实原保存结果或沿用原操作重试，再保存资料版本。
+    </p>
     <h3>简历版本</h3>
     <button
       v-for="version in resumeVersions"
@@ -204,7 +215,7 @@ async function verifyVersion(): Promise<void> {
     <button
       type="button"
       class="button-primary"
-      :disabled="materialsBusy || !!pendingVersionSave"
+      :disabled="materialsBusy || !!pendingVersionSave || pendingOperation !== null"
       @click="saveVersion('resume')"
     >
       保存简历新版本
@@ -245,7 +256,7 @@ async function verifyVersion(): Promise<void> {
     <button
       type="button"
       class="button-primary"
-      :disabled="materialsBusy || !!pendingVersionSave"
+      :disabled="materialsBusy || !!pendingVersionSave || pendingOperation !== null"
       @click="saveVersion('jd')"
     >
       确认并保存JD版本

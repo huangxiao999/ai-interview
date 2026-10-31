@@ -102,6 +102,29 @@ try {
     await waitUntil(`location.pathname === '/app' && !!document.querySelector('#resume-body')`, 'resume workspace', targetSession)
   }
 
+  async function assertNewResumeBlocksVersionSaves() {
+    await waitUntil(`!!document.querySelector('#jd-body')
+      && !Array.from(document.querySelectorAll('button')).find(button => button.textContent.trim() === '核实原保存结果').disabled`,
+      'new resume unresolved with existing version panel')
+    const before = await evaluate(`({ writes: window.p2Hooks.versionWriteAttempts, me: window.p2Hooks.meCalls })`)
+    for (const label of ['保存简历新版本', '确认并保存JD版本']) {
+      assert.equal(await evaluate(`Array.from(document.querySelectorAll('button'))
+        .find(button => button.textContent.trim() === ${JSON.stringify(label)}).disabled`), true,
+        'an unresolved new resume must block another version save')
+      // Dispatch deliberately bypasses the native disabled-button click suppression.
+      await evaluate(`Array.from(document.querySelectorAll('button'))
+        .find(button => button.textContent.trim() === ${JSON.stringify(label)})
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }))`)
+    }
+    await delay(100)
+    assert.equal(await evaluate(`window.p2Hooks.versionWriteAttempts`), before.writes)
+    assert.equal(await evaluate(`window.p2Hooks.meCalls`), before.me,
+      'version save handlers must stop before identity precheck or POST')
+    assert.equal(await evaluate(`!!Array.from(document.querySelectorAll('button'))
+      .find(button => button.textContent.trim() === '核实版本保存结果')`), false,
+      'a second unresolved version operation must not be created')
+  }
+
   await login()
   const unsaved = '切窗未保存草稿' + 'U'.repeat(105)
   await evaluate(`(() => {
@@ -111,10 +134,14 @@ try {
       failLookup: false, failNextMe: false,
       invalidateNextPost: false, invalidateNextDelete: false,
       meCalls: 0, csrfCalls: 0,
-      postOperations: [], versionOperations: [], failVersionBody: false, failVersionLookup: false,
+      postOperations: [], versionOperations: [], versionWriteAttempts: 0,
+      failVersionBody: false, failVersionLookup: false,
       failDeleteBody: false, failDeleteLookup: false }
     window.fetch = async (input, init) => {
       const pathname = new URL(input instanceof Request ? input.url : input, location.href).pathname
+      if (init?.method === 'POST' && (pathname.endsWith('/versions') || pathname.endsWith('/jd-versions'))) {
+        window.p2Hooks.versionWriteAttempts += 1
+      }
       if (pathname === '/api/auth/me') window.p2Hooks.meCalls += 1
       if (pathname === '/api/auth/csrf') window.p2Hooks.csrfCalls += 1
       if (pathname === '/api/auth/me' && window.p2Hooks.failNextMe) {
@@ -267,6 +294,7 @@ try {
   })()`)
   await waitUntil(`document.body.innerText.includes('暂时无法确认是否保存')`, 'unknown save result')
   assert.equal(await evaluate(`window.p2Hooks.postOperations.length`), 2)
+  await assertNewResumeBlocksVersionSaves()
   const pendingOperationBeforePrecheck = await evaluate(`window.p2Hooks.postOperations[1]`)
   await evaluate(`(() => {
     window.p2Hooks.failNextMe = true
@@ -311,6 +339,37 @@ try {
     'unknown-case cleanup')
   await evaluate(`document.querySelector('.material-list li:first-child button').click()`)
   await waitUntil(`!!document.querySelector('#jd-body')`, 'version editing panel')
+  // A second unknown create exercises the query-only recovery path as well as the retry above.
+  await waitUntil(`!document.querySelector('#resume-body')?.disabled`, 'ready for query-only create recovery')
+  const beforeQueryRecovery = await evaluate(`({ items: document.querySelectorAll('.material-list li').length,
+    posts: window.p2Hooks.postOperations.length })`)
+  const queryRecoveredBody = '仅核实原新建结果的合成简历' + 'Q'.repeat(110)
+  await evaluate(`(() => {
+    const input = document.querySelector('#resume-body')
+    input.value = ${JSON.stringify(queryRecoveredBody)}
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    window.p2Hooks.failPostBody = true
+    window.p2Hooks.failLookup = true
+    Array.from(document.querySelectorAll('button')).find(button => button.textContent.trim() === '确认并保存简历').click()
+  })()`)
+  await waitUntil(`document.body.innerText.includes('暂时无法确认是否保存')`, 'query-only new resume result unknown')
+  await assertNewResumeBlocksVersionSaves()
+  await evaluate(`window.p2Hooks.failLookup = false;
+    Array.from(document.querySelectorAll('button')).find(button => button.textContent.trim() === '核实原保存结果').click()`)
+  await waitUntil(`document.querySelector('[aria-label="简历详情"] pre')?.textContent === ${JSON.stringify(queryRecoveredBody)}
+    && document.querySelectorAll('.material-list li').length === ${beforeQueryRecovery.items + 1}
+    && !document.querySelector('#resume-body')?.disabled`, 'new resume recovered by its original operation query')
+  assert.equal(await evaluate(`window.p2Hooks.postOperations.length`), beforeQueryRecovery.posts + 1)
+  await evaluate(`Array.from(document.querySelectorAll('.material-list li:first-child button'))
+    .find(button => button.textContent.includes('删除整份')).click()`)
+  await waitUntil(`document.body.innerText.includes('确认删除整份简历')`, 'query-only recovery cleanup confirmation')
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(button => button.textContent.trim() === '确认删除').click()`)
+  await waitUntil(`document.querySelectorAll('.material-list li').length === ${beforeQueryRecovery.items}
+    && !document.querySelector('.material-list li:first-child button').disabled`, 'query-only recovery cleanup')
+  await evaluate(`document.querySelector('.material-list li:first-child button').click()`)
+  await waitUntil(`!!document.querySelector('#jd-body') && !document.querySelector('#jd-body').disabled`, 'A version panel after resolving both creates')
+  assert.equal(await evaluate(`document.querySelectorAll('[data-resume-version]').length`), 1)
+  assert.equal(await evaluate(`document.querySelectorAll('[data-jd-version]').length`), 0)
   const jdFirst = 'Java后端目标岗位' + 'J'.repeat(70)
   const jdSecond = '第二版Java后端目标岗位' + 'K'.repeat(70)
   await evaluate(`(() => {
