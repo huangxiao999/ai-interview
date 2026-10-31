@@ -193,7 +193,8 @@ async function openResume(resumeId: string): Promise<void> {
   if (materialsBusy.value || !materials.allowRootChange(resumeId)) return
   const generation = materials.generation
   const requestId = ++materials.detailRequestId
-  selected.value = null
+  // 同根刷新保留已确认详情，避免临时读取故障卸载未决操作的恢复入口；跨根仍先清空。
+  if (selected.value?.resumeId !== resumeId) selected.value = null
   materials.selectVersionRoot(resumeId)
   materialsBusy.value = true
   materialsMessage.value = ''
@@ -262,7 +263,11 @@ async function confirmDelete(): Promise<void> {
       result.state === 'CLEANED' ? '简历及当前正文已删除。' : '删除已受理，资料已禁访。'
     await loadItems(generation)
   } catch (error: unknown) {
-    if (generation === materials.generation) showError(error)
+    if (generation === materials.generation) {
+      // 未知结果先核实原删除；关闭模态遮挡，但保留 pendingDelete 及其恢复入口。
+      if (error instanceof ApiError && error.code === 'RESULT_UNKNOWN') confirmDeleteId.value = null
+      showError(error)
+    }
   } finally {
     if (generation === materials.generation) materialsBusy.value = false
   }

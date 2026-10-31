@@ -154,12 +154,13 @@ try {
       meCalls: 0, csrfCalls: 0,
       postOperations: [], versionOperations: [], versionWriteAttempts: 0,
       failVersionBody: false, failVersionLookup: false,
-      failDeleteBody: false, failDeleteLookup: false }
+      failDeleteBody: false, failDeleteLookup: false, deleteWrites: 0 }
     window.fetch = async (input, init) => {
       const pathname = new URL(input instanceof Request ? input.url : input, location.href).pathname
       if (init?.method === 'POST' && (pathname.endsWith('/versions') || pathname.endsWith('/jd-versions'))) {
         window.p2Hooks.versionWriteAttempts += 1
       }
+      if (pathname.startsWith('/api/materials/resumes/') && init?.method === 'DELETE') window.p2Hooks.deleteWrites += 1
       if (pathname === '/api/auth/me') window.p2Hooks.meCalls += 1
       if (pathname === '/api/auth/csrf') window.p2Hooks.csrfCalls += 1
       if (pathname === '/api/auth/me' && window.p2Hooks.failNextMe) {
@@ -471,8 +472,35 @@ try {
     if (recoverDelete) {
       await waitUntil(`document.body.innerText.includes('暂时无法确认删除结果')
         && !Array.from(document.querySelectorAll('button')).find(button => button.textContent.includes('核实删除状态')).disabled`, 'B deletion result initially unknown')
-      await evaluate(`window.p2Hooks.failDeleteLookup = false;
-        Array.from(document.querySelectorAll('button')).find(button => button.textContent.includes('核实删除状态')).click()`)
+      const writesAfterAcceptedDelete = await evaluate(`window.p2Hooks.deleteWrites`)
+      const recoveryLocation = await evaluate(`(() => {
+        const button = Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '核实删除状态');
+        const modal = document.querySelector('dialog[open]');
+        return { reachable: !!button && (!modal || modal.contains(button)),
+          visibleMessage: (modal ?? document.body).innerText.includes('暂时无法确认删除结果') }
+      })()`)
+      assert.equal(recoveryLocation.reachable, true, 'unknown deletion recovery must be reachable from the active modal')
+      assert.equal(recoveryLocation.visibleMessage, true, 'unknown deletion feedback must be visible in the active interaction surface')
+      async function clickDeletionRecovery() {
+        const point = await evaluate(`(() => {
+          const button = Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '核实删除状态');
+          button.scrollIntoView({ block: 'center' });
+          const r = button.getBoundingClientRect();
+          const x = r.left + r.width / 2, y = r.top + r.height / 2;
+          return { x, y, hit: document.elementFromPoint(x, y)?.closest('button') === button }
+        })()`)
+        assert.equal(point.hit, true, 'native pointer must hit the recovery button without closing the modal manually')
+        await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 }, sessionId)
+        await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 }, sessionId)
+      }
+      await clickDeletionRecovery()
+      await waitUntil(`document.body.innerText.includes('暂时无法核实删除状态') &&
+        !!Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '核实删除状态' && !b.disabled)`, 'failed deletion lookup preserves recovery')
+      assert.equal(await evaluate(`window.p2Hooks.deleteWrites`), writesAfterAcceptedDelete, 'lookup failure must not reissue DELETE')
+      await evaluate(`window.p2Hooks.failDeleteLookup = false`)
+      await clickDeletionRecovery()
+      await waitUntil(`!document.querySelector('dialog[open]') && document.body.innerText.includes('已核实删除状态')`, 'lost deletion response reconciled without another DELETE')
+      assert.equal(await evaluate(`window.p2Hooks.deleteWrites`), writesAfterAcceptedDelete, 'successful verification must only query the original deletion')
     }
     await waitUntil(`document.querySelectorAll('.material-list li').length === ${listCount}
       && !Array.from(document.querySelectorAll('button')).find(button => button.textContent.includes('刷新列表')).disabled`, 'B deletion completed')
@@ -721,6 +749,73 @@ try {
   await waitUntil(`!document.body.innerText.includes('网络异常，暂时无法核实请求结果')`, 'recovered reads clear stale failure messages')
   const historyShot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }, sessionId)
   fs.writeFileSync(path.resolve('../.cache/p2dt04-history.png'), Buffer.from(historyShot.data, 'base64'))
+
+  // 同根固定地址：未决版本经过焦点身份核实，详情重读失败也必须保留两种恢复入口。
+  const focusRoot = await evaluate(`(async () => (await (await fetch('/api/materials/resumes')).json())[0].resumeId)()`)
+  await send('Page.navigate', { url: `${base}/app/resumes/${focusRoot}` }, sessionId)
+  await waitUntil(`!!document.querySelector('#jd-body') && !!document.querySelector('[data-resume-version]')`, 'fixed-address version editor')
+  const initialJdCount = await evaluate(`(async () => (await (await fetch('/api/materials/resumes/${focusRoot}/jd-versions')).json()).length)()`)
+  await evaluate(`(() => {
+    const prior = window.fetch;
+    window.focusNativeFetch = prior;
+    window.focusCase = { holdMe: false, releaseMe: null, failDetail: false, detailFailures: 0,
+      failLookup: true, dropNextBody: true, operations: [] };
+    window.fetch = async (input, init) => {
+      const p = new URL(input, location.href).pathname;
+      if (p === '/api/auth/me' && window.focusCase.holdMe) return new Promise(resolve => {
+        window.focusCase.releaseMe = () => prior(input, init).then(resolve)
+      });
+      if (p === '/api/materials/resumes/${focusRoot}' && !init?.method && window.focusCase.failDetail) {
+        window.focusCase.detailFailures += 1;
+        throw new TypeError('synthetic same-root detail interruption')
+      }
+      if (p.includes('/jd-operations/') && window.focusCase.failLookup) throw new TypeError('synthetic unresolved version lookup');
+      if (p.endsWith('/jd-versions') && init?.method === 'POST') {
+        window.focusCase.operations.push(init.headers['X-Operation-Id']);
+        const response = await prior(input, init);
+        if (response.ok && window.focusCase.dropNextBody) {
+          window.focusCase.dropNextBody = false;
+          return { ok: true, json: async () => { throw new TypeError('synthetic accepted version response loss') } }
+        }
+        return response
+      }
+      return prior(input, init)
+    }
+  })()`)
+  for (const recovery of ['query', 'retry']) {
+    const pendingBody = `Focus detail failure ${recovery} ` + 'J'.repeat(100)
+    await evaluate(`(() => {
+      window.focusCase.failLookup = true; window.focusCase.dropNextBody = true;
+      const input = document.querySelector('#jd-body'); input.value = ${JSON.stringify(pendingBody)};
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '确认并保存JD版本').click()
+    })()`)
+    await waitUntil(`document.body.innerText.includes('暂时无法确认版本是否保存') &&
+      !!Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '核实版本保存结果' && !b.disabled)`, 'unresolved fixed-address JD')
+    const originalOperation = await evaluate(`window.focusCase.operations.at(-1)`)
+    const failureCount = await evaluate(`window.focusCase.detailFailures`)
+    await evaluate(`window.focusCase.holdMe = true; window.focusCase.releaseMe = null;
+      window.focusCase.failDetail = true; window.dispatchEvent(new Event('focus'))`)
+    await waitUntil(`!!window.focusCase.releaseMe && !document.querySelector('#jd-body')`, 'private editor hidden during focus identity check')
+    await evaluate(`window.focusCase.holdMe = false; window.focusCase.releaseMe()`)
+    await waitUntil(`window.focusCase.detailFailures > ${failureCount} &&
+      !!Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '核实版本保存结果' && !b.disabled) &&
+      !!Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '沿用原操作重试版本' && !b.disabled)`, 'pending version recovery remains reachable after same-root detail failure')
+    assert.equal(await evaluate(`document.querySelector('#jd-body').value`), pendingBody)
+    assert.equal(await evaluate(`!!document.querySelector('[aria-label="简历详情"] pre')`), true, 'same-root saved detail remains available')
+    const writesBeforeRecovery = await evaluate(`window.focusCase.operations.length`)
+    const action = recovery === 'query' ? '核实版本保存结果' : '沿用原操作重试版本'
+    await evaluate(`window.focusCase.failLookup = false;
+      Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === ${JSON.stringify(action)}).click()`)
+    await waitUntil(`document.querySelector('[aria-label="JD详情"] pre')?.textContent === ${JSON.stringify(pendingBody)} &&
+      !Array.from(document.querySelectorAll('button')).some(b => b.textContent.trim() === '核实版本保存结果')`, 'fixed-address original version reconciled')
+    assert.equal(await evaluate(`window.focusCase.operations.length`), writesBeforeRecovery + (recovery === 'retry' ? 1 : 0))
+    assert.equal(await evaluate(`window.focusCase.operations.at(-1)`), originalOperation, 'recovery must retain the original operation identity')
+  }
+  const recoveredVersions = await evaluate(`(async () => (await (await fetch('/api/materials/resumes/${focusRoot}/jd-versions')).json()).map(v => v.versionId))()`)
+  assert.equal(recoveredVersions.length, initialJdCount + 2, 'two logical saves create exactly two versions')
+  assert.equal(new Set(recoveredVersions).size, recoveredVersions.length)
+  await evaluate(`window.fetch = window.focusNativeFetch`)
 
   // 未决 JD 已提交但回包/核实失败；另一窗口删除原根后，用本人删除回执终止旧入口。
   const deletedVersionRoot = await evaluate(`(async () => (await (await fetch('/api/materials/resumes')).json())[0].resumeId)()`)
