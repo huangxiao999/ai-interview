@@ -19,6 +19,7 @@ import {
 
 const router = useRouter()
 const route = useRoute()
+let navigatingRoot = false
 const deleteDialog = ref<HTMLDialogElement | null>(null)
 let deleteTrigger: HTMLElement | null = null
 const session = useSessionStore()
@@ -65,8 +66,13 @@ function warnBeforeUnload(event: BeforeUnloadEvent): void {
 }
 onMounted(() => window.addEventListener('beforeunload', warnBeforeUnload))
 onUnmounted(() => window.removeEventListener('beforeunload', warnBeforeUnload))
-onBeforeRouteLeave(() => status.value !== 'authenticated' || materials.allowLeave())
-onBeforeRouteUpdate(() => status.value !== 'authenticated' || materials.allowLeave())
+// 页面内切根已核实草稿/未决操作；已接受的保存仅同步地址，不丢弃输入或重复询问。
+onBeforeRouteLeave(
+  () => navigatingRoot || status.value !== 'authenticated' || materials.allowLeave(),
+)
+onBeforeRouteUpdate(
+  () => navigatingRoot || status.value !== 'authenticated' || materials.allowLeave(),
+)
 
 watch(
   () => [status.value, identity.value?.accountId] as const,
@@ -84,6 +90,7 @@ watch(
   ([resumeId, state]) => {
     if (
       typeof resumeId === 'string' &&
+      !navigatingRoot &&
       state === 'authenticated' &&
       identity.value?.authorities.includes('TRIAL_USER')
     )
@@ -147,6 +154,8 @@ async function saveDraft(): Promise<void> {
     pendingOperation.value = null
     draft.value = ''
     selected.value = detail
+    await syncSelectedAddress()
+    if (generation !== materials.generation) return
     materialsMessage.value = '简历正文已保存为第 1 版。可继续确认 JD 或追加资料版本。'
     await loadItems(generation)
   } catch (error: unknown) {
@@ -175,6 +184,8 @@ async function verifySave(): Promise<void> {
     selected.value = detail
     draft.value = ''
     pendingOperation.value = null
+    await syncSelectedAddress()
+    if (generation !== materials.generation) return
     materialsMessage.value = '已核实原保存操作成功。'
     await loadItems(generation)
   } catch (error: unknown) {
@@ -197,7 +208,8 @@ async function openResume(resumeId: string): Promise<void> {
   if (selected.value?.resumeId !== resumeId) selected.value = null
   materials.selectVersionRoot(resumeId)
   materialsBusy.value = true
-  materialsMessage.value = ''
+  // 固定地址身份恢复的详情重读不能抹掉未决新建操作的预检/核实提示。
+  if (!pendingOperation.value) materialsMessage.value = ''
   try {
     const detail = await getResume(resumeId)
     if (generation === materials.generation && requestId === materials.detailRequestId)
@@ -302,12 +314,51 @@ async function signOut(): Promise<void> {
   if (await session.logout()) await router.replace('/login')
 }
 
-function startNew(): void {
-  if (materialsBusy.value || !materials.allowRootChange(null)) return
-  materials.detailRequestId += 1
-  selected.value = null
-  materials.selectVersionRoot(null)
-  document.querySelector<HTMLTextAreaElement>('#resume-body')?.focus()
+async function syncSelectedAddress(): Promise<void> {
+  if (!selected.value) return
+  const target = `/app/resumes/${selected.value.resumeId}`
+  if (route.path === target) return
+  navigatingRoot = true
+  try {
+    // 保存已由服务端确认；保留当前版本/草稿，只替换地址，避免身份恢复重开原根。
+    await router.replace(target)
+  } finally {
+    navigatingRoot = false
+  }
+}
+
+async function uploaded(): Promise<void> {
+  const generation = materials.generation
+  await syncSelectedAddress()
+  if (generation === materials.generation) await loadItems(generation)
+}
+
+async function navigateRoot(resumeId: string | null): Promise<void> {
+  if (navigatingRoot || materialsBusy.value || !materials.allowRootChange(resumeId)) return
+  const generation = materials.generation
+  navigatingRoot = true
+  try {
+    const target = resumeId === null ? '/app' : `/app/resumes/${resumeId}`
+    if (route.path !== target && (await router.push(target))) return
+    if (generation !== materials.generation) return
+    // 路由身份重核期间禁止观察器重开旧地址；只在导航成功后切换目标。
+    materials.detailRequestId += 1
+    if (selected.value?.resumeId !== resumeId) selected.value = null
+    materials.selectVersionRoot(resumeId)
+    if (resumeId !== null && status.value === 'authenticated') await openResume(resumeId)
+    else if (resumeId === null) {
+      await nextTick()
+      document.querySelector<HTMLTextAreaElement>('#resume-body')?.focus()
+    }
+  } catch (error: unknown) {
+    if (generation === materials.generation) showError(error)
+  } finally {
+    navigatingRoot = false
+  }
+}
+
+async function startNew(): Promise<void> {
+  await navigateRoot(null)
 }
 
 function cancelDeleteDialog(): void {
@@ -390,7 +441,7 @@ async function retryIdentity(): Promise<void> {
             新增简历
           </button>
         </nav>
-        <MaterialUploadPanel @saved="loadItems()" />
+        <MaterialUploadPanel @saved="uploaded" />
         <fieldset :disabled="!!materials.pendingUpload" class="material-fields">
           <p>可粘贴或上传简历、确认 JD 并查看资料版本。面试训练将在后续任务中开放。</p>
           <div class="material-grid">
@@ -461,7 +512,7 @@ async function retryIdentity(): Promise<void> {
                     type="button"
                     class="button-secondary"
                     :disabled="materialsBusy || !!pendingVersionSave"
-                    @click="openResume(item.resumeId)"
+                    @click="navigateRoot(item.resumeId)"
                   >
                     查看
                   </button>

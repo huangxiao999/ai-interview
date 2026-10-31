@@ -563,9 +563,10 @@ try {
     beforeLateDeleteCount - 1, 'older list response must not restore the deleted resume')
   assert.equal(await evaluate(`window.p2Hooks.csrfCalls > ${beforeDeleteCsrf.csrf}`), true)
   assert.equal(await evaluate(`document.body.innerText.includes(${JSON.stringify(synthetic)})`), false)
+  const reloadPath = await evaluate(`location.pathname`)
   await evaluate(`window.p2BeforeReload = true`)
   await send('Page.reload', {}, sessionId)
-  await waitUntil(`!window.p2BeforeReload && location.pathname === '/app' && !!document.querySelector('#resume-body')`, 'workspace reload')
+  await waitUntil(`!window.p2BeforeReload && location.pathname === ${JSON.stringify(reloadPath)} && !!document.querySelector('#resume-body') && !document.querySelector('#resume-body').disabled`, 'workspace reload retains selected address')
   assert.equal(await evaluate(`document.body.innerText.includes(${JSON.stringify(synthetic)})`), false)
 
   const raceBody = '账号切换期间的合成草稿' + 'R'.repeat(110)
@@ -654,6 +655,11 @@ try {
   })
   await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '核实并沿用原确认操作').click()`)
   await waitUntil(`!document.body.innerText.includes('文件：synthetic.docx') && document.body.innerText.includes('Verified browser upload')`, 'original confirmation reconciled')
+  await waitUntil(`(async () => {
+    if (!location.pathname.startsWith('/app/resumes/')) return false;
+    const detail = await (await fetch('/api/materials/resumes/' + location.pathname.split('/').at(-1))).json();
+    return detail.body.startsWith('Verified browser upload') && !!document.querySelector('#jd-body')
+  })()`, 'confirmed upload address identifies accepted root')
   // 同一上传由另一窗口先确认时，原窗口只能打开固定版本，不能再次确认或丢失恢复出口。
   const { root: secondDom } = await send('DOM.getDocument', {}, sessionId)
   const { nodeId: secondInput } = await send('DOM.querySelector', { nodeId: secondDom.nodeId, selector: 'input[type=file]' }, sessionId)
@@ -704,7 +710,11 @@ try {
     input.dispatchEvent(new Event('input', { bubbles: true }))
     Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('确认并保存简历')).click()
   })()`)
-  await waitUntil(`document.querySelector('[aria-label="简历详情"] pre')?.textContent.startsWith('Pasted after parse failure')`, 'paste fallback saved')
+  await waitUntil(`document.querySelector('[aria-label="简历详情"] pre')?.textContent.startsWith('Pasted after parse failure') && !document.querySelector('#resume-body').disabled`, 'paste fallback saved')
+  const savedPastePath = await evaluate(`location.pathname`)
+  assert.match(savedPastePath, /^\/app\/resumes\/[0-9a-f-]{36}$/)
+  await evaluate(`window.dispatchEvent(new Event('focus'))`)
+  await waitUntil(`location.pathname === ${JSON.stringify(savedPastePath)} && document.querySelector('[aria-label="简历详情"] pre')?.textContent.startsWith('Pasted after parse failure') && !document.querySelector('#resume-body').disabled`, 'accepted paste root retained after focus')
   // P2-DT-04：精确草稿计数、离开取消和读取失败不冒充空数据。
   await evaluate(`(() => { const input = document.querySelector('#resume-body'); input.value = ${JSON.stringify(' \t😀\r\nX \t')}; input.dispatchEvent(new Event('input', { bubbles: true })) })()`)
   await waitUntil(`document.querySelector('[data-count="resume"]').textContent.includes('3 / 20,000')`, 'normalized draft count')
@@ -749,6 +759,56 @@ try {
   await waitUntil(`!document.body.innerText.includes('网络异常，暂时无法核实请求结果')`, 'recovered reads clear stale failure messages')
   const historyShot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }, sessionId)
   fs.writeFileSync(path.resolve('../.cache/p2dt04-history.png'), Buffer.from(historyShot.data, 'base64'))
+
+  // 固定地址进入后新增/切根，焦点身份核实不能恢复旧地址的目标。
+  const navigationRoots = await evaluate(`(async () => (await (await fetch('/api/materials/resumes')).json()).slice(0, 2).map(r => r.resumeId))()`)
+  assert.equal(navigationRoots.length, 2, 'navigation regression needs two private roots')
+  for (const targetRoot of [null, navigationRoots[1]]) {
+    await send('Page.navigate', { url: `${base}/app/resumes/${navigationRoots[0]}` }, sessionId)
+    await waitUntil(`!!document.querySelector('#jd-body') && !document.querySelector('#resume-body').disabled`, 'navigation source ready')
+    await evaluate(`(() => {
+      window.navigationProof = { me: 0, uploads: [] }; const prior = window.fetch;
+      window.fetch = (input, init) => {
+        const p = new URL(input, location.href).pathname;
+        if (p === '/api/auth/me') window.navigationProof.me++;
+        if (p === '/api/materials/uploads' && init?.method === 'POST') window.navigationProof.uploads.push(init.body.get('resumeId'));
+        return prior(input, init)
+      };
+      ${targetRoot === null
+        ? `Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '新增简历').click()`
+        : `Array.from(document.querySelectorAll('.material-list li')).find(li => li.querySelector('.resume-label').title === '${targetRoot}').querySelector('button').click()`}
+    })()`)
+    const targetPath = targetRoot === null ? '/app' : `/app/resumes/${targetRoot}`
+    await waitUntil(`location.pathname === '${targetPath}' && !!document.querySelector('#resume-body') && !document.querySelector('#resume-body').disabled`, 'selected root address synchronized')
+    const checksBeforeFocus = await evaluate(`window.navigationProof.me`)
+    await evaluate(`window.dispatchEvent(new Event('focus'))`)
+    await waitUntil(`window.navigationProof.me > ${checksBeforeFocus} && !!document.querySelector('#resume-body') && !document.querySelector('#resume-body').disabled`, 'navigation focus identity restored')
+    assert.equal(await evaluate(`location.pathname`), targetPath)
+    if (targetRoot === null) {
+      assert.equal(await evaluate(`!!document.querySelector('#jd-body')`), false, 'new resume remains unselected')
+    } else {
+      const targetVersion = await evaluate(`(async () => (await (await fetch('/api/materials/resumes/${targetRoot}')).json()).versionId)()`)
+      assert.equal(await evaluate(`document.querySelector('[aria-label="简历详情"]').textContent.includes('${targetVersion}')`), true, 'focus retains selected B')
+      await evaluate(`(() => { const input = document.querySelector('#jd-body'); input.value = 'Retain B navigation draft'; input.dispatchEvent(new Event('input', { bubbles: true })) })()`)
+      acceptDialogs = false
+      const beforeCancel = dialogCount
+      await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '新增简历').click()`)
+      await waitUntil(`!!document.querySelector('#jd-body')`, 'cancel navigation keeps editor')
+      assert.equal(dialogCount, beforeCancel + 1, 'root change asks once')
+      assert.equal(await evaluate(`location.pathname`), targetPath, 'cancel keeps B address')
+      assert.equal(await evaluate(`document.querySelector('#jd-body').value`), 'Retain B navigation draft')
+      acceptDialogs = true
+      await evaluate(`(() => { const input = document.querySelector('#jd-body'); input.value = ''; input.dispatchEvent(new Event('input', { bubbles: true })) })()`)
+    }
+    const { root: navigationDom } = await send('DOM.getDocument', {}, sessionId)
+    const { nodeId: navigationFile } = await send('DOM.querySelector', { nodeId: navigationDom.nodeId, selector: 'input[type=file]' }, sessionId)
+    await send('DOM.setFileInputFiles', { nodeId: navigationFile, files: [uploadFixture] }, sessionId)
+    await waitUntil(`window.navigationProof.uploads.length === 1 && !!document.querySelector('[data-upload-state]')`, 'navigation upload registered')
+    assert.deepEqual(await evaluate(`window.navigationProof.uploads`), [targetRoot], 'upload uses new or selected B target after focus')
+    await waitUntil(`!!Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '放弃上传，改用粘贴正文' && !b.disabled)`, 'navigation upload can be abandoned')
+    await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '放弃上传，改用粘贴正文').click()`)
+    await waitUntil(`!document.body.innerText.includes('文件：synthetic.docx') && !document.querySelector('#resume-body').disabled`, 'navigation upload abandoned')
+  }
 
   // 同根固定地址：未决版本经过焦点身份核实，详情重读失败也必须保留两种恢复入口。
   const focusRoot = await evaluate(`(async () => (await (await fetch('/api/materials/resumes')).json())[0].resumeId)()`)
