@@ -86,15 +86,29 @@ watch(
 )
 
 watch(
-  () => [route.params.resumeId, status.value] as const,
-  ([resumeId, state]) => {
+  () => [route.params.resumeId, status.value, materials.routeNavigating] as const,
+  ([resumeId, state, routeNavigating], previous) => {
     if (
       typeof resumeId === 'string' &&
       !navigatingRoot &&
+      !routeNavigating &&
       state === 'authenticated' &&
       identity.value?.authorities.includes('TRIAL_USER')
     )
       void openResume(resumeId)
+    else if (
+      resumeId === undefined &&
+      state === 'authenticated' &&
+      !navigatingRoot &&
+      !routeNavigating &&
+      previous?.[2] &&
+      !materialsBusy.value
+    ) {
+      // 历史前进到新建地址也必须清除旧根，不能保留它作为上传目标。
+      materials.invalidateDetailRead()
+      selected.value = null
+      materials.selectVersionRoot(null)
+    }
   },
   { immediate: true },
 )
@@ -201,13 +215,19 @@ async function verifySave(): Promise<void> {
 }
 
 async function openResume(resumeId: string): Promise<void> {
-  if (materialsBusy.value || !materials.allowRootChange(resumeId)) return
+  if (
+    materials.routeNavigating ||
+    (materialsBusy.value && !materials.detailLoading) ||
+    !materials.allowRootChange(resumeId)
+  )
+    return
   const generation = materials.generation
   const requestId = ++materials.detailRequestId
   // 同根刷新保留已确认详情，避免临时读取故障卸载未决操作的恢复入口；跨根仍先清空。
   if (selected.value?.resumeId !== resumeId) selected.value = null
   materials.selectVersionRoot(resumeId)
   materialsBusy.value = true
+  materials.detailLoading = true
   // 固定地址身份恢复的详情重读不能抹掉未决新建操作的预检/核实提示。
   if (!pendingOperation.value) materialsMessage.value = ''
   try {
@@ -220,14 +240,23 @@ async function openResume(resumeId: string): Promise<void> {
         error instanceof ApiError &&
         error.status === 404 &&
         (await materials.reconcileDeletedRoot(resumeId, generation))
-      if (generation === materials.generation)
+      if (generation === materials.generation && requestId === materials.detailRequestId)
         materialsMessage.value = deleted
           ? '此简历已删除，资料已禁止访问。'
           : '不存在或无权访问此记录；可返回本人简历列表。'
-      if (!deleted && (!(error instanceof ApiError) || error.status !== 404)) showError(error)
+      if (
+        generation === materials.generation &&
+        requestId === materials.detailRequestId &&
+        !deleted &&
+        (!(error instanceof ApiError) || error.status !== 404)
+      )
+        showError(error)
     }
   } finally {
-    if (generation === materials.generation) materialsBusy.value = false
+    if (generation === materials.generation && requestId === materials.detailRequestId) {
+      materials.detailLoading = false
+      materialsBusy.value = false
+    }
   }
 }
 
@@ -410,7 +439,11 @@ async function retryIdentity(): Promise<void> {
       </div>
     </header>
 
-    <section v-if="status === 'checking'" class="workspace-panel" role="status">
+    <section
+      v-if="status === 'checking' || materials.routeNavigating"
+      class="workspace-panel"
+      role="status"
+    >
       正在核实登录状态…
     </section>
     <section v-else-if="status === 'uncertain'" class="workspace-panel" role="alert">

@@ -35,6 +35,8 @@ export const useMaterialsStore = defineStore('materials', () => {
   const listState = ref<'loading' | 'ready' | 'failed'>('loading')
   const versionsState = ref<'loading' | 'ready' | 'failed'>('loading')
   const detailRequestId = ref(0)
+  const detailLoading = ref(false)
+  const routeNavigating = ref(false)
   const deletionReceipts = ref<Record<string, DeletionStatus>>({})
   const deletionMessages = ref<Record<string, string>>({})
   const cleanupTargets = ref<string[]>([])
@@ -117,7 +119,7 @@ export const useMaterialsStore = defineStore('materials', () => {
     deletionReceipts.value[resumeId] = receipt
     deletionMessages.value[resumeId] = ''
     if (selected.value?.resumeId === resumeId || versionResumeId.value === resumeId) {
-      detailRequestId.value += 1
+      invalidateDetailRead()
       versionRequestId.value += 1
     }
     items.value = items.value.filter((item) => item.resumeId !== resumeId)
@@ -196,6 +198,15 @@ export const useMaterialsStore = defineStore('materials', () => {
     listRequestId.value += 1
   }
 
+  function invalidateDetailRead(): void {
+    detailRequestId.value += 1
+    // 导航只解除旧详情读取的占用，不能解除保存/删除等写操作的保护。
+    if (detailLoading.value) {
+      detailLoading.value = false
+      materialsBusy.value = false
+    }
+  }
+
   function beginListRequest(): number {
     invalidateListRequests()
     return listRequestId.value
@@ -223,6 +234,7 @@ export const useMaterialsStore = defineStore('materials', () => {
     items.value = []
     listState.value = 'loading'
     detailRequestId.value += 1
+    detailLoading.value = false
     deletionReceipts.value = {}
     deletionMessages.value = {}
     cleanupTargets.value = []
@@ -271,6 +283,9 @@ export const useMaterialsStore = defineStore('materials', () => {
     listState,
     versionsState,
     detailRequestId,
+    detailLoading,
+    routeNavigating,
+    invalidateDetailRead,
     deletionReceipts,
     deletionMessages,
     hasUnsaved,

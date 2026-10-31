@@ -262,7 +262,9 @@ try {
   await evaluate(`Array.from(document.querySelectorAll('button'))
     .find(button => button.textContent.includes('确认并保存简历')).click()`)
   await waitUntil(`window.p2Hooks.csrfCalls > ${beforeCsrfRecovery.csrf}
-    && document.body.innerText.includes('简历正文已保存为第 1 版')`,
+    && document.body.innerText.includes('简历正文已保存为第 1 版')
+    && !!Array.from(document.querySelectorAll('.material-list li:first-child button'))
+      .find(button => button.textContent.includes('删除整份') && !button.disabled)`,
     'fresh CSRF token used for the next explicit save')
   assert.equal(await evaluate(`window.p2Hooks.postOperations.length`), beforeCsrfRecovery.posts + 2)
   await evaluate(`Array.from(document.querySelectorAll('.material-list li:first-child button'))
@@ -809,6 +811,58 @@ try {
     await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '放弃上传，改用粘贴正文').click()`)
     await waitUntil(`!document.body.innerText.includes('文件：synthetic.docx') && !document.querySelector('#resume-body').disabled`, 'navigation upload abandoned')
   }
+
+  // 浏览器后退/前进：旧根的详情GET仍挂起时也必须读取新目标，并拒绝迟到旧结果。
+  await evaluate(`(() => {
+    const prior = window.fetch;
+    window.historyProof = { heldRoot: null, releases: [], reads: [], uploads: [] };
+    window.fetch = (input, init) => {
+      const p = new URL(input, location.href).pathname;
+      const root = p.startsWith('/api/materials/resumes/') ? p.slice('/api/materials/resumes/'.length) : '';
+      if (!init?.method && root && !root.includes('/')) {
+        window.historyProof.reads.push(root);
+        if (root === window.historyProof.heldRoot) return new Promise(resolve => {
+          window.historyProof.releases.push(() => prior(input, init).then(resolve))
+        })
+      }
+      if (p === '/api/materials/uploads' && init?.method === 'POST') window.historyProof.uploads.push(init.body.get('resumeId'));
+      return prior(input, init)
+    }
+  })()`)
+  for (const [action, departedRoot, targetRoot] of [
+    ['back', navigationRoots[1], navigationRoots[0]],
+    ['forward', navigationRoots[0], navigationRoots[1]],
+  ]) {
+    await evaluate(`window.historyProof.heldRoot = '${departedRoot}'`)
+    if (action === 'forward') {
+      await evaluate(`window.dispatchEvent(new Event('focus'))`)
+      await waitUntil(`window.historyProof.releases.length === 1`, 'old detail GET held before history navigation')
+    }
+    const oldReads = await evaluate(`window.historyProof.reads.filter(id => id === '${departedRoot}').length`)
+    await evaluate(`history.${action}()`)
+    await waitUntil(`location.pathname === '/app/resumes/${targetRoot}' && window.historyProof.reads.includes('${targetRoot}') && !!document.querySelector('#jd-body') && !document.querySelector('#resume-body').disabled`, 'history target loads before old detail released')
+    assert.equal(await evaluate(`window.historyProof.reads.filter(id => id === '${departedRoot}').length`), oldReads, 'history identity recovery must not read departed address')
+    const targetVersion = await evaluate(`(async () => (await (await fetch('/api/materials/resumes/${targetRoot}')).json()).versionId)()`)
+    await evaluate(`window.historyProof.heldRoot = null; window.historyProof.releases.splice(0).forEach(release => release())`)
+    await delay(150)
+    assert.equal(await evaluate(`location.pathname`), `/app/resumes/${targetRoot}`)
+    assert.equal(await evaluate(`document.querySelector('[aria-label="简历详情"]')?.textContent.includes('${targetVersion}')`), true, 'late old detail cannot replace history target')
+    const { root: historyDom } = await send('DOM.getDocument', {}, sessionId)
+    const { nodeId: historyFile } = await send('DOM.querySelector', { nodeId: historyDom.nodeId, selector: 'input[type=file]' }, sessionId)
+    await send('DOM.setFileInputFiles', { nodeId: historyFile, files: [uploadFixture] }, sessionId)
+    await waitUntil(`window.historyProof.uploads.length === 1 && !!document.querySelector('[data-upload-state]')`, 'history target upload registered')
+    assert.deepEqual(await evaluate(`window.historyProof.uploads.splice(0)`), [targetRoot], 'history navigation upload uses committed target')
+    await waitUntil(`!!Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '放弃上传，改用粘贴正文' && !b.disabled)`, 'history upload can be abandoned')
+    await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '放弃上传，改用粘贴正文').click()`)
+    await waitUntil(`!document.body.innerText.includes('文件：synthetic.docx') && !document.querySelector('#resume-body').disabled`, 'history upload abandoned')
+  }
+
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '新增简历').click()`)
+  await waitUntil(`location.pathname === '/app' && !!document.querySelector('#resume-body') && !document.querySelector('#jd-body')`, 'new address before history traversal')
+  await evaluate(`history.back()`)
+  await waitUntil(`location.pathname === '/app/resumes/${navigationRoots[1]}' && !!document.querySelector('#jd-body') && !document.querySelector('#resume-body').disabled`, 'history returns from new address to B')
+  await evaluate(`history.forward()`)
+  await waitUntil(`location.pathname === '/app' && !!document.querySelector('#resume-body') && !document.querySelector('#jd-body')`, 'history forward restores new root target')
 
   // 同根固定地址：未决版本经过焦点身份核实，详情重读失败也必须保留两种恢复入口。
   const focusRoot = await evaluate(`(async () => (await (await fetch('/api/materials/resumes')).json())[0].resumeId)()`)

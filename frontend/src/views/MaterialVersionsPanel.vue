@@ -72,7 +72,8 @@ async function refreshVersions(): Promise<void> {
         error.status === 404 &&
         (await materials.reconcileDeletedRoot(resumeId, generation))
       ))
-        if (current(generation, resumeId)) showError(error)
+        if (current(generation, resumeId) && requestId === materials.versionRequestId)
+          showError(error)
     }
   }
 }
@@ -92,6 +93,7 @@ async function selectVersion(kind: VersionKind, versionId: string): Promise<void
   const resumeId = props.resumeId
   const requestId = ++materials.detailRequestId
   materialsBusy.value = true
+  materials.detailLoading = true
   try {
     const detail = await getVersion(resumeId, kind, versionId)
     if (!current(generation, resumeId) || requestId !== materials.detailRequestId) return
@@ -104,10 +106,14 @@ async function selectVersion(kind: VersionKind, versionId: string): Promise<void
         error.status === 404 &&
         (await materials.reconcileDeletedRoot(resumeId, generation))
       ))
-        if (current(generation, resumeId)) showError(error)
+        if (current(generation, resumeId) && requestId === materials.detailRequestId)
+          showError(error)
     }
   } finally {
-    if (generation === materials.generation) materialsBusy.value = false
+    if (generation === materials.generation && requestId === materials.detailRequestId) {
+      materials.detailLoading = false
+      materialsBusy.value = false
+    }
   }
 }
 
