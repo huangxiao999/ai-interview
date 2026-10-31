@@ -4,6 +4,7 @@ import { useMaterialsStore } from '../stores/materials'
 import LoginPage from '../views/LoginPage.vue'
 import WorkspacePage from '../views/WorkspacePage.vue'
 import KnowledgePage from '../views/KnowledgePage.vue'
+import KnowledgeIndexPage from '../views/KnowledgeIndexPage.vue'
 import { safeReturnPath } from './returnPath'
 
 export const router = createRouter({
@@ -12,6 +13,12 @@ export const router = createRouter({
     { path: '/', redirect: '/app' },
     { path: '/login', name: 'login', component: LoginPage },
     { path: '/app', name: 'workspace', component: WorkspacePage, meta: { requiresAuth: true } },
+    {
+      path: '/app/knowledge-index',
+      name: 'knowledgeIndex',
+      component: KnowledgeIndexPage,
+      meta: { requiresAuth: true },
+    },
     {
       path: '/app/knowledge',
       name: 'knowledge',

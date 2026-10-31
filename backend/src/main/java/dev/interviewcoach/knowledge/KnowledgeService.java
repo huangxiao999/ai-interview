@@ -41,6 +41,7 @@ public final class KnowledgeService {
                 return detail(old.version());
             }
             UUID root = documentId == null ? UUID.randomUUID() : documentId;
+            if (repository.reservedIndexOperation(actor.accountId(), operation)) throw new KnowledgeConflict();
             // 固定顺序：当前账号行锁 → 公共知识根锁。跨维护者审核也由同一根串行裁决。
             if (documentId == null) repository.createRoot(root);
             repository.lockRoot(root);
@@ -70,6 +71,7 @@ public final class KnowledgeService {
                 return detail(old.version());
             }
             if (original.decision() != null) throw new KnowledgeStateConflict();
+            if (repository.reservedIndexOperation(actor.accountId(), operation)) throw new KnowledgeConflict();
             repository.review(version, actor.accountId(), operation, decision, reason);
             return detail(repository.findVersion(root, version).orElseThrow());
         });

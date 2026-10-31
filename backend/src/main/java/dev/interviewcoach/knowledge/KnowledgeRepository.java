@@ -50,6 +50,10 @@ class KnowledgeRepository {
 
     void createRoot(UUID id) { jdbc.update("INSERT INTO knowledge_document(id) VALUES(?)", id); }
 
+    boolean reservedIndexOperation(UUID actor, UUID operation) {
+        return jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM knowledge_index_request WHERE actor_id=? AND operation_id=?)",Boolean.class,actor,operation);
+    }
+
     void lockRoot(UUID id) {
         if (jdbc.queryForList("SELECT id FROM knowledge_document WHERE id=? FOR UPDATE", UUID.class, id).isEmpty()) {
             throw new KnowledgeUnavailable();
