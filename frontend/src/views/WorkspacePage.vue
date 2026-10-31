@@ -433,6 +433,9 @@ async function retryIdentity(): Promise<void> {
       </div>
       <div v-if="status === 'authenticated' && identity" class="account-actions">
         <span class="account-name">{{ identity.loginName }}</span>
+        <RouterLink v-if="identity.authorities.includes('KNOWLEDGE_MAINTAINER')" to="/app/knowledge"
+          >知识维护</RouterLink
+        >
         <button type="button" class="button-secondary" :disabled="busy" @click="signOut">
           {{ busy ? '正在退出…' : '退出登录' }}
         </button>

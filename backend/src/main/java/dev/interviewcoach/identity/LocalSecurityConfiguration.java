@@ -36,6 +36,7 @@ class LocalSecurityConfiguration {
                 .requestMatchers(HttpMethod.GET, "/api/auth/me").authenticated()
                 .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
                 .requestMatchers("/api/materials/**").authenticated()
+                .requestMatchers("/api/maintenance/knowledge/**").hasAuthority("KNOWLEDGE_MAINTAINER")
                 .anyRequest().denyAll());
         http.exceptionHandling(exceptions -> exceptions
                 .authenticationEntryPoint((request, response, ex) -> JsonSecurityResponses.write(response,
