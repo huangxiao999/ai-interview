@@ -22,7 +22,7 @@
 | 页面参考 | [参考图目录](docs/design-references-v1/)；图中数据和布局不替代业务规则 |
 | 工程环境、启动与基础检查 | [README](README.md)；实际依赖以 backend/pom.xml、Maven Wrapper 和 frontend/package-lock.json 为准，验证边界见 README |
 | 当前环境、首片详细设计与开发任务 | [ENVIRONMENT_VERIFICATION](docs/开发环境调整与基础验证.md)、[FIRST_SLICE_DESIGN](docs/首个业务切片详细设计.md)、[DEVELOPMENT_PLAN](docs/开发计划.md)、[DT01_VERIFICATION](<docs/DT-01 版本化持久化基础：实现与验证记录.md>)、[DT02_VERIFICATION](<docs/DT-02 账号与受控开通：实现与验证记录.md>)、[DT03_VERIFICATION](<docs/DT-03 会话认证与最小API：实现与验证记录.md>)、[DT04_VERIFICATION](<docs/DT-04 重置与会话撤销：实现与验证记录.md>)、[DT05_VERIFICATION](<docs/DT-05 最小登录前端：实现与验证记录.md>)、[DT06_VERIFICATION](<docs/DT-06 浏览器与恢复闭环：实现与验证记录.md>)、[DT07_REVIEW](<docs/DT-07 账号切片审查与证据登记.md>)；DT-01/03～07已完成各自范围，DT-02两项 P2 修复已复审、部分证据待补，完整FS-A及PF/VP状态按证据范围判断 |
-| P2 资料与版本设计、任务 | [详细设计](<docs/P2 资料与版本详细设计.md>)、[P2-DT-01～05任务](<docs/P2 资料与版本开发任务.md>)、[P2-DT-01记录](<docs/P2-DT-01 粘贴简历私有闭环：实现与验证记录.md>)、[P2-DT-02记录](<docs/P2-DT-02 JD确认与资料版本：实现与验证记录.md>)；P2-DT-01/02 已合并；P2-DT-03 本地实施与验证，当前状态见文件记录，待审阅/CI/复审；P2 阶段未验收 |
+| P2 资料与版本设计、任务 | [详细设计](<docs/P2 资料与版本详细设计.md>)、[P2-DT-01～05任务](<docs/P2 资料与版本开发任务.md>)、[P2-DT-01记录](<docs/P2-DT-01 粘贴简历私有闭环：实现与验证记录.md>)、[P2-DT-02记录](<docs/P2-DT-02 JD确认与资料版本：实现与验证记录.md>)、[P2-DT-03记录](<docs/P2-DT-03 受控文件与解析：实现与验证记录.md>)、[P2-DT-04记录](<docs/P2-DT-04 页面历史与删除影响：实现与验证记录.md>)；P2-DT-01～03 已合并；P2-DT-04 实施与验证状态见记录，待审阅/CI/复审；P2 阶段未验收 |
 
 - 区分已确认规则、建模/技术建议、待决项和实施待核实事实；“文档已写完”不代表方案已确认或产品已通过。
 - 后续已确认补充也属于依据，特别检查 CF、DACC、TD、PF 的适用内容；不能只读早期 PRD 而遗漏确认记录。
@@ -154,3 +154,9 @@ Postman CLI is installed on this device, and can be used for API Engineering wor
 - 根目录 `& './scripts/Verify-P2Upload.ps1'` 复用资料隔离套件；持久化基础脚本只选择 `PersistenceFoundationIT`，其他套件必须由各自隔离脚本运行，不取消数据库隔离保护。最终命令与结果见记录。
 - 原文件以登记 UUID 定位，原请求的 target_resume_id 与确认后绑定的 resume_id 含义不同，幂等比较不得混用。文件与版本绑定共同提交，文件系统发布/删除在事务外，未知结果先核实原登记。
 - 解析子进程只传必要环境，临时目录也受登记和删除追踪。退出保护期内不把清理记录标成 CLEANED；保持单活动应用执行者假设。`AccountWriteGuard.lockCurrentAccount` 仅供已接受后台工作取当前账号锁，用户写请求必须用 `requireCurrent` 比较观察到的凭证代次和权限。
+
+## P2-DT-04 增量约定
+
+- 入口：[页面历史与删除影响记录](<docs/P2-DT-04 页面历史与删除影响：实现与验证记录.md>)。以 PR #13 合并后的 `c4e12ec` 为基线，包含解析规范化修复 `6745c63`；原待PR/CI描述属于历史。
+- 删除影响接口缺失数量不得默认填0；404不单独证明已删除，先核实本人最小删除回执，再终止失效根的未决版本入口。清理PENDING只表示尚未清完，不推断服务端未提供的具体故障。
+- 标签页刷新仅以账号绑定的最小删除目标ID恢复查询；不持久化草稿、正文、文件或安全凭据，匿名/切换账号清对应状态。所有恢复结果仍由服务端身份、归属和删除事实决定。

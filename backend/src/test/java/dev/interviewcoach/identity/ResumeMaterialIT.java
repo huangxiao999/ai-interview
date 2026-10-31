@@ -480,15 +480,35 @@ class ResumeMaterialIT {
         Path failedFixture = privateRoot().getParent().resolve("broken.pdf");
         java.nio.file.Files.writeString(failedFixture, "%PDF-broken synthetic");
         browserCommand.environment().put("P2_FAILED_UPLOAD_FIXTURE", failedFixture.toString());
+        // 独立合成 B 的已确认原文件；非空目录阻止物理清理，用于核对页面的真实 PENDING 回执。
+        var cleanupUser = new Client(b);
+        var cleanupUpload = cleanupUser.upload("cleanup.docx", docx("DT04 cleanup fixture ".repeat(8)), UUID.randomUUID(), null);
+        String cleanupUploadId = json(cleanupUpload).get("uploadId").toString();
+        awaitUpload(cleanupUser, cleanupUploadId);
+        var cleanupConfirmed = cleanupUser.send("POST", "/api/materials/uploads/" + cleanupUploadId + "/confirmation",
+                cleanupUser.bodyJson("DT04 cleanup fixture ".repeat(8)), cleanupUser.token, UUID.randomUUID());
+        assertThat(cleanupConfirmed.statusCode()).isEqualTo(200);
+        String cleanupRoot = json(cleanupConfirmed).get("resumeId").toString();
+        Path cleanupBlock = privateRoot().resolve(cleanupUploadId + ".bin").normalize();
+        assertThat(cleanupBlock.getParent()).isEqualTo(privateRoot());
+        java.nio.file.Files.delete(cleanupBlock);
+        java.nio.file.Files.createDirectory(cleanupBlock);
+        java.nio.file.Files.writeString(cleanupBlock.resolve("sentinel"), "synthetic cleanup obstruction");
+        browserCommand.environment().put("P2_CLEANUP_RESUME", cleanupRoot);
+        browserCommand.environment().put("P2_CLEANUP_BLOCK", cleanupBlock.toString());
         browserCommand.redirectErrorStream(true);
         Process browser = browserCommand.start();
-        boolean finished = browser.waitFor(90, TimeUnit.SECONDS);
+        boolean finished = browser.waitFor(150, TimeUnit.SECONDS);
         if (!finished) browser.destroyForcibly();
         String output = new String(browser.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         assertThat(finished).as("Chrome material verification timed out").isTrue();
         assertThat(browser.exitValue()).as(output).isZero();
         assertThat(output).contains("P2-DT-01 real Chrome material checks passed.")
+                .contains("P2-DT-04 real Chrome page checks passed.")
                 .doesNotContain(a.password());
+        assertThat(jdbc.queryForObject("SELECT state FROM material_delete_request WHERE resume_id=?::uuid", String.class, cleanupRoot))
+                .isEqualTo("CLEANED");
+        assertThat(java.nio.file.Files.exists(cleanupBlock)).isFalse();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM material_resume_version v "
                 + "JOIN material_resume r ON r.id = v.resume_id "
                 + "WHERE r.owner_account_id = ? AND v.body = ?", Integer.class,

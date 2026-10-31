@@ -77,6 +77,13 @@ async function choose(event: Event): Promise<void> {
     materials.uploadMessage = '请选择不超过 10,000,000 字节的 PDF 或 DOCX'
     return
   }
+  if (
+    (materials.draft || materials.resumeVersionDraft) &&
+    !window.confirm('上传文件将替换尚未保存的简历正文草稿，JD草稿会保留。确定替换？')
+  )
+    return
+  materials.draft = ''
+  materials.resumeVersionDraft = ''
   materials.pendingUpload = {
     operationId: crypto.randomUUID(),
     file,
@@ -166,7 +173,10 @@ async function loadDrafts(): Promise<void> {
   materials.materialsBusy = true
   try {
     const drafts = await listUploadDrafts()
-    if (actor.isCurrent()) materials.uploadDrafts = drafts
+    if (actor.isCurrent()) {
+      materials.uploadDrafts = drafts
+      materials.uploadListLoaded = true
+    }
   } catch (error: unknown) {
     if (actor.isCurrent()) failure(error)
   } finally {
@@ -297,11 +307,13 @@ async function downloadVersion(): Promise<void> {
     link.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   } catch (error: unknown) {
-    if (actor.isCurrent())
+    if (actor.isCurrent()) {
+      failure(error)
       materials.uploadMessage =
         error instanceof ApiError && error.status === 404
           ? '所选版本没有可访问的原文件'
           : '暂时无法读取原文件，请核实后重试'
+    }
   }
 }
 </script>
@@ -313,6 +325,16 @@ async function downloadVersion(): Promise<void> {
       最多 10,000,000 字节；PDF 最多 20 页。解析最多 30 秒，不识别扫描图片；必须核对正文后确认。
     </p>
     <p>当前目标：{{ materials.selected ? '为选中简历追加版本' : '新建简历' }}</p>
+    <p v-if="materials.materialsBusy" role="status">正在处理资料请求，请等待当前操作结束。</p>
+    <p
+      v-if="
+        materials.uploadListLoaded &&
+        !materials.pendingUpload &&
+        materials.uploadDrafts.length === 0
+      "
+    >
+      没有待恢复的上传。可选择新文件或粘贴正文。
+    </p>
     <button
       v-if="!materials.pendingUpload"
       type="button"
@@ -323,7 +345,7 @@ async function downloadVersion(): Promise<void> {
     </button>
     <ul v-if="!materials.pendingUpload">
       <li v-for="draft in materials.uploadDrafts" :key="draft.uploadId">
-        {{ draft.name }} · {{ draft.state }}
+        {{ draft.name }} · {{ stateNames[draft.state] ?? '等待核实' }}
         <button
           type="button"
           :disabled="
@@ -367,6 +389,16 @@ async function downloadVersion(): Promise<void> {
           }}</span
         >
       </p>
+      <p
+        v-if="
+          ['RECEIVING', 'QUEUED', 'PARSING'].includes(materials.pendingUpload.status?.state ?? '')
+        "
+      >
+        文件已登记，尚未保存简历版本。单次解析最多30秒；请核实状态后核对正文。
+      </p>
+      <p v-if="!materials.pendingUpload.status" role="status">
+        上传结果未知，请先核实原操作；网络失败不能证明文件未被接受。
+      </p>
       <button type="button" :disabled="materials.materialsBusy" @click="verify">
         核实上传与解析状态
       </button>
@@ -391,6 +423,15 @@ async function downloadVersion(): Promise<void> {
             "
           />
         </label>
+        <p>
+          待确认正文 · {{ materials.codepoints(materials.pendingUpload.body) }} / 20,000 码点<span
+            v-if="materials.codepoints(materials.pendingUpload.body) > 20000"
+            >（超出
+            {{
+              materials.codepoints(materials.pendingUpload.body) - 20000
+            }}，请修改，正文不会截断）</span
+          >
+        </p>
         <button
           v-if="
             materials.pendingUpload.status?.state === 'READY' ||
