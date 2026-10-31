@@ -188,8 +188,9 @@ async function confirmDelete(): Promise<void> {
     if (generation !== materials.generation) return
     confirmDeleteId.value = null
     pendingDelete.value = null
-    selected.value = null
-    materials.selectVersionRoot(null)
+    // 删除确认可能来自另一份简历；不得清除当前根的草稿和未决版本操作。
+    if (selected.value?.resumeId === resumeId) selected.value = null
+    if (materials.versionResumeId === resumeId) materials.selectVersionRoot(null)
     materialsMessage.value =
       result.state === 'CLEANED' ? '简历及当前正文已删除。' : '删除已受理，资料已禁访。'
     await loadItems(generation)
@@ -211,8 +212,8 @@ async function verifyDelete(): Promise<void> {
     if (generation !== materials.generation) return
     pendingDelete.value = null
     confirmDeleteId.value = null
-    selected.value = null
-    materials.selectVersionRoot(null)
+    if (selected.value?.resumeId === resumeId) selected.value = null
+    if (materials.versionResumeId === resumeId) materials.selectVersionRoot(null)
     materialsMessage.value = `已核实删除状态：${result.state === 'CLEANED' ? '当前正文已清理' : '资料已禁访'}`
     await loadItems(generation)
   } catch (error: unknown) {
