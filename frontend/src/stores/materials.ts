@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { Identity, SessionStatus } from './session'
-import type { ResumeDetail, ResumeSummary, VersionKind } from '../api/materials'
+import type { ResumeDetail, ResumeSummary, VersionKind, UploadStatus } from '../api/materials'
 
 interface PendingVersionSave {
   resumeId: string
@@ -12,6 +12,17 @@ interface PendingVersionSave {
 
 export const useMaterialsStore = defineStore('materials', () => {
   const draft = ref('')
+  const pendingUpload = ref<{
+    operationId: string
+    file: File
+    root: string | null
+    status: UploadStatus | null
+    body: string
+    confirmOperation: string | null
+    confirmedBody: string | null
+  } | null>(null)
+  const uploadMessage = ref('')
+  const uploadDrafts = ref<UploadStatus[]>([])
   const items = ref<ResumeSummary[]>([])
   const selected = ref<ResumeDetail | null>(null)
   const materialsBusy = ref(false)
@@ -21,6 +32,7 @@ export const useMaterialsStore = defineStore('materials', () => {
   const confirmDeleteId = ref<string | null>(null)
   const deleteVersionCount = ref(0)
   const deleteJdVersionCount = ref(0)
+  const deleteFileCount = ref(0)
   const versionResumeId = ref<string | null>(null)
   const resumeVersions = ref<ResumeSummary[]>([])
   const jdVersions = ref<ResumeSummary[]>([])
@@ -51,6 +63,9 @@ export const useMaterialsStore = defineStore('materials', () => {
     generation.value += 1
     invalidateListRequests()
     draft.value = ''
+    pendingUpload.value = null
+    uploadMessage.value = ''
+    uploadDrafts.value = []
     items.value = []
     selected.value = null
     materialsBusy.value = false
@@ -60,6 +75,7 @@ export const useMaterialsStore = defineStore('materials', () => {
     confirmDeleteId.value = null
     deleteVersionCount.value = 0
     deleteJdVersionCount.value = 0
+    deleteFileCount.value = 0
     selectVersionRoot(null)
   }
 
@@ -91,6 +107,9 @@ export const useMaterialsStore = defineStore('materials', () => {
   }
 
   return {
+    pendingUpload,
+    uploadMessage,
+    uploadDrafts,
     draft,
     items,
     selected,
@@ -101,6 +120,7 @@ export const useMaterialsStore = defineStore('materials', () => {
     confirmDeleteId,
     deleteVersionCount,
     deleteJdVersionCount,
+    deleteFileCount,
     versionResumeId,
     resumeVersions,
     jdVersions,

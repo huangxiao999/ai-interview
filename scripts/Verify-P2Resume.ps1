@@ -1,4 +1,4 @@
-# P2-DT-01/02: isolated real-PG16 version/HTTP/transaction/browser checks.
+# P2-DT-01/02/03: isolated real-PG16 version/file/HTTP/transaction/browser checks.
 # Retain the original database prefix for existing isolation guards and historical evidence.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -44,9 +44,26 @@ try {
     Write-Output "Isolated P2-DT-01 verification database: $testDatabase (retained for inspection)."
 
     Set-Location (Join-Path $projectRoot 'backend')
+    $verificationStarted = [DateTime]::UtcNow
     ./mvnw.cmd '-Dmaven.repo.local=../.cache/maven-repository' -B -ntp -Pdatabase-verification `
-        '-Dit.test=ResumeMaterialIT' test-compile failsafe:integration-test failsafe:verify *> $logPath
+        '-Dit.test=ResumeMaterialIT' verify *> $logPath
     $verificationExit = $LASTEXITCODE
+    $report = Join-Path $projectRoot 'backend/target/failsafe-reports/TEST-dev.interviewcoach.identity.ResumeMaterialIT.xml'
+    if ((Test-Path -LiteralPath $report) -and (Get-Item -LiteralPath $report).LastWriteTimeUtc -ge $verificationStarted) {
+        $reportDirectory = Join-Path $projectRoot ".cache/$testDatabase-reports"
+        New-Item -ItemType Directory -Path $reportDirectory -Force | Out-Null
+        Copy-Item -LiteralPath $report -Destination $reportDirectory
+        $unitDirectory = Join-Path $reportDirectory 'unit'
+        New-Item -ItemType Directory -Path $unitDirectory -Force | Out-Null
+        Get-ChildItem -LiteralPath (Join-Path $projectRoot 'backend/target/surefire-reports') -Filter 'TEST-*.xml' |
+            Where-Object { $_.LastWriteTimeUtc -ge $verificationStarted } |
+            Copy-Item -Destination $unitDirectory
+        $manifest['report'] = ".cache/$testDatabase-reports/TEST-dev.interviewcoach.identity.ResumeMaterialIT.xml"
+    } elseif ($verificationExit -eq 0) {
+        $verificationExit = 1
+    }
+    $manifest['migrationV5Sha256'] = (Get-FileHash -LiteralPath (Join-Path $projectRoot 'backend/src/main/resources/db/migration/V5__create_private_uploads.sql') -Algorithm SHA256).Hash
+    $manifest['parserWorkerSha256'] = (Get-FileHash -LiteralPath (Join-Path $projectRoot 'backend/src/main/java/dev/interviewcoach/material/ParserWorker.java') -Algorithm SHA256).Hash
     $manifest['status'] = if ($verificationExit -eq 0) { 'passed' } else { 'failed' }
     $manifest['exitCode'] = $verificationExit
     $manifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding UTF8

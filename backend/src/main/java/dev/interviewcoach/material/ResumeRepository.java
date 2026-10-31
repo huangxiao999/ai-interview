@@ -149,6 +149,11 @@ class ResumeRepository {
         return jdbc.queryForObject("SELECT clock_timestamp()", OffsetDateTime.class);
     }
 
+    int countFiles(UUID resumeId) {
+        return jdbc.queryForObject("SELECT count(*) FROM material_upload WHERE resume_id=? AND NOT file_cleaned",
+                Integer.class, resumeId);
+    }
+
     void recordDeletion(UUID requestId, UUID resumeId, OffsetDateTime now, List<UUID> versions) {
         jdbc.update("INSERT INTO material_delete_request"
                 + "(id, resume_id, requested_at, cleanup_deadline_at, state, cleaned_at) "
@@ -170,6 +175,17 @@ class ResumeRepository {
         jdbc.update("DELETE FROM material_resume_version WHERE resume_id = ?", resumeId);
         jdbc.update("UPDATE material_resume SET state = 'DELETED', generation = generation + 1, "
                 + "deleted_at = ? WHERE id = ? AND state = 'ACTIVE'", now, resumeId);
+        // 文件清理意图与根屏障共同提交；文件 I/O 在提交后由后台执行。
+        for (UUID uploadId : jdbc.queryForList("SELECT id FROM material_upload WHERE resume_id=? "
+                + "AND state <> 'CLEANED'", UUID.class, resumeId)) {
+            jdbc.update("INSERT INTO material_cleanup_item(id,delete_request_id,target_type,target_id,state) "
+                    + "VALUES (?,?,'PRIVATE_FILE',?,'PENDING')", UUID.randomUUID(), requestId, uploadId);
+        }
+        jdbc.update("UPDATE material_upload SET state='DELETE_PENDING',generation=generation+1,parsed_body=NULL,"
+                + "file_cleaned=false,updated_at=clock_timestamp() WHERE resume_id=? AND state <> 'CLEANED'", resumeId);
+        jdbc.update("UPDATE material_delete_request SET state='PENDING',cleaned_at=NULL WHERE id=? "
+                + "AND EXISTS (SELECT 1 FROM material_cleanup_item WHERE delete_request_id=? AND state='PENDING')",
+                requestId, requestId);
     }
 
     Optional<Deletion> deletion(UUID ownerId, UUID resumeId) {

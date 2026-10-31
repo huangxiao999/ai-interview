@@ -60,10 +60,12 @@ class PersistenceFoundationIT {
             assertThat(jdbc.queryForList("""
                     SELECT tablename FROM pg_tables WHERE schemaname='app' ORDER BY tablename
                     """, String.class)).containsExactly("flyway_schema_history", "identity_account",
-                    "identity_account_authority", "spring_session", "spring_session_attributes");
+                    "identity_account_authority", "material_cleanup_item", "material_delete_request",
+                    "material_jd_version", "material_resume", "material_resume_version", "material_upload",
+                    "spring_session", "spring_session_attributes");
             assertThat(jdbc.queryForList("""
                     SELECT version FROM flyway_schema_history WHERE type='SQL' AND success ORDER BY installed_rank
-                    """, String.class)).containsExactly("1", "2");
+                    """, String.class)).containsExactly("1", "2", "3", "4", "5");
             assertThat(jdbc.queryForObject("SELECT count(*) FROM identity_account", Integer.class)).isZero();
             assertThat(jdbc.queryForObject("SELECT count(*) FROM spring_session", Integer.class)).isZero();
             assertThat(context.getBeanFactory().getBeanDefinition("sessionRepository").getDependsOn())
@@ -200,10 +202,14 @@ class PersistenceFoundationIT {
                 """, Integer.class)).isZero();
         // V2 did not commit. Only this temporary failure fixture is corrected; released migrations stay immutable.
         Files.writeString(faulty, validSql);
+        // 当前应用需要完整迁移集；只修正隔离夹具的 V2，然后继续其后的正式迁移。
+        for (String name : List.of("V3__create_resume_material_tables.sql", "V4__create_jd_versions.sql", "V5__create_private_uploads.sql")) {
+            Files.writeString(migrations.resolve(name), resource("db/migration/" + name));
+        }
         try (var context = start("failure_case", location)) {
             var jdbc = new JdbcTemplate(context.getBean(DataSource.class));
             assertThat(jdbc.queryForList("SELECT version FROM flyway_schema_history WHERE type='SQL' AND success ORDER BY installed_rank",
-                    String.class)).containsExactly("1", "2");
+                    String.class)).containsExactly("1", "2", "3", "4", "5");
             assertThat(jdbc.queryForObject("SELECT count(*) FROM identity_account", Integer.class)).isZero();
         }
     }
@@ -234,6 +240,7 @@ class PersistenceFoundationIT {
         return new SpringApplicationBuilder(InterviewCoachApplication.class)
                 .web(WebApplicationType.SERVLET).registerShutdownHook(false).logStartupInfo(false)
                 .run("--spring.profiles.active=local", "--server.port=0",
+                        "--material.private-root=" + Path.of("../.cache", System.getenv("DT01_TEST_DATABASE"), "private").toAbsolutePath().normalize(),
                         "--spring.datasource.hikari.schema=" + schema,
                         "--spring.flyway.default-schema=" + schema,
                         "--spring.flyway.schemas=" + schema,

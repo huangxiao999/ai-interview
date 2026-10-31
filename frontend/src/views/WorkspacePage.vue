@@ -6,6 +6,7 @@ import { useSessionStore } from '../stores/session'
 import { useMaterialsStore } from '../stores/materials'
 import { ApiError } from '../api/http'
 import MaterialVersionsPanel from './MaterialVersionsPanel.vue'
+import MaterialUploadPanel from './MaterialUploadPanel.vue'
 import {
   createResume,
   deleteResume,
@@ -31,6 +32,7 @@ const {
   confirmDeleteId,
   deleteVersionCount,
   deleteJdVersionCount,
+  deleteFileCount,
   pendingVersionSave,
 } = storeToRefs(materials)
 
@@ -72,7 +74,7 @@ async function loadItems(generation = materials.generation): Promise<void> {
 }
 
 async function saveDraft(): Promise<void> {
-  if (materialsBusy.value || status.value !== 'authenticated') return
+  if (materialsBusy.value || materials.pendingUpload || status.value !== 'authenticated') return
   const retryingUnresolvedOperation = pendingOperation.value !== null
   if (!pendingOperation.value) pendingOperation.value = crypto.randomUUID()
   const operationId = pendingOperation.value
@@ -161,6 +163,7 @@ async function prepareDelete(resumeId: string): Promise<void> {
     confirmDeleteId.value = resumeId
     deleteVersionCount.value = impact.versionCount
     deleteJdVersionCount.value = impact.jdVersionCount
+    deleteFileCount.value = impact.fileCount
   } catch (error: unknown) {
     if (generation === materials.generation) showError(error)
   } finally {
@@ -269,131 +272,136 @@ async function retryIdentity(): Promise<void> {
       <p class="eyebrow">我的练习空间</p>
       <h1 id="workspace-heading">我的简历</h1>
       <template v-if="identity?.authorities.includes('TRIAL_USER')">
-        <p>可粘贴简历、确认 JD 并查看资料版本。PDF/DOCX 和面试训练将在后续任务中开放。</p>
-        <div class="material-grid">
-          <section aria-labelledby="resume-input-heading">
-            <h2 id="resume-input-heading">新建简历</h2>
-            <label for="resume-body">简历正文</label>
-            <textarea
-              id="resume-body"
-              v-model="draft"
-              rows="10"
-              :disabled="materialsBusy || pendingOperation !== null || !!pendingVersionSave"
-              placeholder="粘贴简历正文，确认后保存为第 1 版"
-            />
-            <p class="field-help">
-              去除首尾空白、统一换行后须为 100～20,000 个 Unicode 字符；不会截断。
+        <MaterialUploadPanel @saved="loadItems()" />
+        <fieldset :disabled="!!materials.pendingUpload" class="material-fields">
+          <p>可粘贴或上传简历、确认 JD 并查看资料版本。面试训练将在后续任务中开放。</p>
+          <div class="material-grid">
+            <section aria-labelledby="resume-input-heading">
+              <h2 id="resume-input-heading">新建简历</h2>
+              <label for="resume-body">简历正文</label>
+              <textarea
+                id="resume-body"
+                v-model="draft"
+                rows="10"
+                :disabled="materialsBusy || pendingOperation !== null || !!pendingVersionSave"
+                placeholder="粘贴简历正文，确认后保存为第 1 版"
+              />
+              <p class="field-help">
+                去除首尾空白、统一换行后须为 100～20,000 个 Unicode 字符；不会截断。
+              </p>
+              <button
+                type="button"
+                class="button-primary"
+                :disabled="materialsBusy || pendingOperation !== null || !!pendingVersionSave"
+                @click="saveDraft"
+              >
+                {{ materialsBusy ? '正在保存…' : '确认并保存简历' }}
+              </button>
+              <button
+                v-if="pendingOperation"
+                type="button"
+                class="button-secondary"
+                :disabled="materialsBusy"
+                @click="verifySave"
+              >
+                核实原保存结果
+              </button>
+              <button
+                v-if="pendingOperation"
+                type="button"
+                class="button-secondary"
+                :disabled="materialsBusy"
+                @click="saveDraft"
+              >
+                沿用原操作重试
+              </button>
+            </section>
+            <section aria-labelledby="resume-history-heading">
+              <h2 id="resume-history-heading">已保存的简历</h2>
+              <p v-if="items.length === 0">暂无已保存简历。</p>
+              <ul v-else class="material-list">
+                <li v-for="item in items" :key="item.resumeId">
+                  <span>第 {{ item.versionNo }} 版 · {{ item.codepointCount }} 字符</span>
+                  <button
+                    type="button"
+                    class="button-secondary"
+                    :disabled="materialsBusy || !!pendingVersionSave"
+                    @click="openResume(item.resumeId)"
+                  >
+                    查看
+                  </button>
+                  <button
+                    type="button"
+                    class="button-secondary"
+                    :disabled="materialsBusy || !!pendingVersionSave"
+                    @click="prepareDelete(item.resumeId)"
+                  >
+                    删除整份
+                  </button>
+                </li>
+              </ul>
+              <button
+                type="button"
+                class="button-secondary"
+                :disabled="materialsBusy"
+                @click="loadItems()"
+              >
+                刷新列表
+              </button>
+            </section>
+          </div>
+          <section v-if="selected" class="material-detail" aria-label="简历详情">
+            <h2>已确认简历 · 第 {{ selected.versionNo }} 版</h2>
+            <p>{{ selected.codepointCount }} 字符</p>
+            <p>简历版本ID：{{ selected.versionId }}</p>
+            <pre>{{ selected.body }}</pre>
+          </section>
+          <MaterialVersionsPanel
+            v-if="selected"
+            :resume-id="selected.resumeId"
+            @saved="loadItems()"
+          />
+          <section
+            v-if="confirmDeleteId"
+            class="material-delete"
+            role="alertdialog"
+            aria-label="确认删除简历"
+          >
+            <h2>确认删除整份简历？</h2>
+            <p>
+              将删除该简历当前的 {{ deleteVersionCount }} 个正文版本和
+              {{ deleteJdVersionCount }} 个JD版本及
+              {{ deleteFileCount }}
+              份原文件/暂存。删除受理后立即禁访且无法撤销，物理清理可延后完成。
             </p>
             <button
               type="button"
               class="button-primary"
-              :disabled="materialsBusy || pendingOperation !== null || !!pendingVersionSave"
-              @click="saveDraft"
+              :disabled="materialsBusy"
+              @click="confirmDelete"
             >
-              {{ materialsBusy ? '正在保存…' : '确认并保存简历' }}
+              确认删除
             </button>
             <button
-              v-if="pendingOperation"
               type="button"
               class="button-secondary"
               :disabled="materialsBusy"
-              @click="verifySave"
+              @click="confirmDeleteId = null"
             >
-              核实原保存结果
-            </button>
-            <button
-              v-if="pendingOperation"
-              type="button"
-              class="button-secondary"
-              :disabled="materialsBusy"
-              @click="saveDraft"
-            >
-              沿用原操作重试
+              取消
             </button>
           </section>
-          <section aria-labelledby="resume-history-heading">
-            <h2 id="resume-history-heading">已保存的简历</h2>
-            <p v-if="items.length === 0">暂无已保存简历。</p>
-            <ul v-else class="material-list">
-              <li v-for="item in items" :key="item.resumeId">
-                <span>第 {{ item.versionNo }} 版 · {{ item.codepointCount }} 字符</span>
-                <button
-                  type="button"
-                  class="button-secondary"
-                  :disabled="materialsBusy || !!pendingVersionSave"
-                  @click="openResume(item.resumeId)"
-                >
-                  查看
-                </button>
-                <button
-                  type="button"
-                  class="button-secondary"
-                  :disabled="materialsBusy || !!pendingVersionSave"
-                  @click="prepareDelete(item.resumeId)"
-                >
-                  删除整份
-                </button>
-              </li>
-            </ul>
-            <button
-              type="button"
-              class="button-secondary"
-              :disabled="materialsBusy"
-              @click="loadItems()"
-            >
-              刷新列表
-            </button>
-          </section>
-        </div>
-        <section v-if="selected" class="material-detail" aria-label="简历详情">
-          <h2>已确认简历 · 第 {{ selected.versionNo }} 版</h2>
-          <p>{{ selected.codepointCount }} 字符</p>
-          <p>简历版本ID：{{ selected.versionId }}</p>
-          <pre>{{ selected.body }}</pre>
-        </section>
-        <MaterialVersionsPanel
-          v-if="selected"
-          :resume-id="selected.resumeId"
-          @saved="loadItems()"
-        />
-        <section
-          v-if="confirmDeleteId"
-          class="material-delete"
-          role="alertdialog"
-          aria-label="确认删除简历"
-        >
-          <h2>确认删除整份简历？</h2>
-          <p>
-            将删除该简历当前的 {{ deleteVersionCount }} 个正文版本和
-            {{ deleteJdVersionCount }} 个JD版本。删除受理后立即禁访且无法撤销。
-          </p>
           <button
-            type="button"
-            class="button-primary"
-            :disabled="materialsBusy"
-            @click="confirmDelete"
-          >
-            确认删除
-          </button>
-          <button
+            v-if="pendingDelete"
             type="button"
             class="button-secondary"
             :disabled="materialsBusy"
-            @click="confirmDeleteId = null"
+            @click="verifyDelete"
           >
-            取消
+            核实删除状态
           </button>
-        </section>
-        <button
-          v-if="pendingDelete"
-          type="button"
-          class="button-secondary"
-          :disabled="materialsBusy"
-          @click="verifyDelete"
-        >
-          核实删除状态
-        </button>
-        <p v-if="materialsMessage" role="status">{{ materialsMessage }}</p>
+          <p v-if="materialsMessage" role="status">{{ materialsMessage }}</p>
+        </fieldset>
       </template>
       <p v-else>账号身份已核实。当前身份没有试用训练权限。</p>
       <p class="subtle">本页不展示模拟记录或其他用户资料。</p>

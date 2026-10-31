@@ -21,13 +21,21 @@ public final class AccountWriteGuard {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("Account write verification requires a transaction.");
         }
-        accounts.lockById(observed.accountId());
-        var current = accounts.findById(observed.accountId())
-                .orElseThrow(() -> new CredentialsExpiredException("Session account no longer exists."));
+        var current = lockCurrentAccount(observed.accountId());
         if (current.credentialVersion() != observed.credentialVersion()
                 || !current.authorities().equals(observed.authorities())) {
             throw new CredentialsExpiredException("Session account facts changed.");
         }
-        return current.actor();
+        return current;
+    }
+
+    /** 已持久接受的后台工作使用当前账号事实；不能用此能力跳过用户写请求的凭证代次比较。 */
+    public Actor lockCurrentAccount(java.util.UUID accountId) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("Account lock requires a transaction.");
+        }
+        accounts.lockById(accountId);
+        return accounts.findById(accountId)
+                .orElseThrow(() -> new CredentialsExpiredException("Account no longer exists.")).actor();
     }
 }

@@ -127,7 +127,7 @@ final class ResumeApi {
     ResponseEntity<DeletionImpact> deletionImpact(Authentication authentication, @PathVariable UUID resumeId) {
         var impact = service.deletionImpact(currentActor.require(authentication), resumeId);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(new DeletionImpact(impact.versionCount(), impact.jdVersionCount()));
+                .body(new DeletionImpact(impact.versionCount(), impact.jdVersionCount(), impact.fileCount()));
     }
 
     @DeleteMapping("/{resumeId}")
@@ -146,7 +146,7 @@ final class ResumeApi {
     record BodyInput(String body) {
     }
 
-    record DeletionImpact(int versionCount, int jdVersionCount) {
+    record DeletionImpact(int versionCount, int jdVersionCount, int fileCount) {
     }
 
     record ResumeSummary(UUID resumeId, UUID versionId, int versionNo, int codepointCount,
