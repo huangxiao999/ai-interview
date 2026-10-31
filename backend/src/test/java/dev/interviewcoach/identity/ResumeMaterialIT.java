@@ -72,7 +72,7 @@ class ResumeMaterialIT {
                 + "VALUES(?,?,1,?,?,100)", legacyVersion, legacyRoot, UUID.randomUUID(), "L".repeat(100));
         flyway = Flyway.configure().dataSource(url, username, password).defaultSchema("app")
                 .schemas("app").locations("classpath:db/migration").load();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(4);
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(5);
         assertThat(flyway.migrate().migrationsExecuted).isZero();
         flyway.validate();
         assertThat(jdbc.queryForObject("SELECT body FROM material_resume_version WHERE id = ?",

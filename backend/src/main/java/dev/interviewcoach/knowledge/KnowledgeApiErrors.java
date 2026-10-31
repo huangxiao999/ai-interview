@@ -11,8 +11,12 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
-@RestControllerAdvice(assignableTypes = KnowledgeApi.class)
+@RestControllerAdvice(assignableTypes = {KnowledgeApi.class, KnowledgeIndexApi.class})
 final class KnowledgeApiErrors {
+    @ExceptionHandler(IndexServiceUnavailable.class)
+    ResponseEntity<ErrorBody> indexUnavailable() { return error(503, "INDEX_SERVICE_UNAVAILABLE", "向量服务尚未核实启用，本次未派发"); }
+    @ExceptionHandler(IndexRetryConfirmation.class)
+    ResponseEntity<ErrorBody> indexConfirmation() { return error(409, "INDEX_RETRY_CONFIRMATION_REQUIRED", "上次可能已执行并收费，请明确确认重复费用风险"); }
     @ExceptionHandler(InvalidKnowledge.class)
     ResponseEntity<ErrorBody> invalid(InvalidKnowledge ex) { return error(400, "INVALID_INPUT", ex.getMessage()); }
     @ExceptionHandler({HttpMessageNotReadableException.class, MissingRequestHeaderException.class,

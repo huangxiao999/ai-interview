@@ -46,10 +46,10 @@ class KnowledgeMaintenanceIT {
         var history = jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' ORDER BY installed_rank");
         var current = Flyway.configure().dataSource(url, System.getenv("DB_USERNAME"), System.getenv("DB_PASSWORD"))
                 .schemas("app").defaultSchema("app").load();
-        assertThat(current.migrate().migrationsExecuted).isEqualTo(1);
+        assertThat(current.migrate().migrationsExecuted).isEqualTo(2);
         assertThat(current.migrate().migrationsExecuted).isZero();
         current.validate();
-        assertThat(jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' AND version<>'7' ORDER BY installed_rank"))
+        assertThat(jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' AND version IN ('1','2','3','4','5','6') ORDER BY installed_rank"))
                 .isEqualTo(history);
         maintainer = account(AccountAuthority.KNOWLEDGE_MAINTAINER);
         other = account(AccountAuthority.KNOWLEDGE_MAINTAINER);
