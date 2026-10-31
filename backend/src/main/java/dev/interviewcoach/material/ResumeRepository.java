@@ -98,6 +98,47 @@ class ResumeRepository {
                 UUID.class, resumeId);
     }
 
+    List<Summary> versions(UUID ownerId, UUID resumeId, boolean jdVersion) {
+        // 表名只由服务端布尔选择；资源身份与归属仍使用绑定参数。
+        String table = jdVersion ? "material_jd_version" : "material_resume_version";
+        return jdbc.query("SELECT r.id AS resume_id, v.id AS version_id, v.version_no, "
+                + "v.codepoint_count, v.confirmed_at FROM " + table + " v "
+                + "JOIN material_resume r ON r.id = v.resume_id "
+                + "WHERE r.owner_account_id = ? AND r.id = ? AND r.state = 'ACTIVE' "
+                + "ORDER BY v.version_no DESC",
+                (rs, n) -> new Summary(rs.getObject("resume_id", UUID.class),
+                        rs.getObject("version_id", UUID.class), rs.getInt("version_no"),
+                        rs.getInt("codepoint_count"), rs.getObject("confirmed_at", OffsetDateTime.class)),
+                ownerId, resumeId);
+    }
+
+    Optional<Detail> jdDetail(UUID ownerId, UUID resumeId, UUID versionId, UUID operationId) {
+        return jdbc.query("SELECT r.id AS resume_id, v.id AS version_id, v.version_no, v.body, "
+                + "v.codepoint_count, v.confirmed_at FROM material_jd_version v "
+                + "JOIN material_resume r ON r.id = v.resume_id "
+                + "WHERE r.owner_account_id = ? AND r.id = ? AND r.state = 'ACTIVE' "
+                + (operationId != null ? "AND v.operation_id = ?" : "AND v.id = ?"),
+                (rs, n) -> new Detail(rs.getObject("resume_id", UUID.class),
+                        rs.getObject("version_id", UUID.class), rs.getInt("version_no"),
+                        rs.getString("body"), rs.getInt("codepoint_count"),
+                        rs.getObject("confirmed_at", OffsetDateTime.class)),
+                ownerId, resumeId, operationId != null ? operationId : versionId).stream().findFirst();
+    }
+
+    void insertJdVersion(UUID id, UUID resumeId, UUID operationId, ResumeText.Normalized body) {
+        // 调用者必须持有账号锁及根行锁，序号分配与版本接受共同提交。
+        jdbc.update("INSERT INTO material_jd_version"
+                + "(id, resume_id, version_no, operation_id, body, codepoint_count) "
+                + "SELECT ?, ?, COALESCE(MAX(version_no), 0) + 1, ?, ?, ? "
+                + "FROM material_jd_version WHERE resume_id = ?",
+                id, resumeId, operationId, body.body(), body.codepointCount(), resumeId);
+    }
+
+    int countJdVersions(UUID resumeId) {
+        return jdbc.queryForObject("SELECT count(*) FROM material_jd_version WHERE resume_id = ?",
+                Integer.class, resumeId);
+    }
+
     int countVersions(UUID resumeId) {
         Integer count = jdbc.queryForObject("SELECT count(*) FROM material_resume_version WHERE resume_id = ?",
                 Integer.class, resumeId);
@@ -119,6 +160,13 @@ class ResumeRepository {
                     + "VALUES (?, ?, 'RESUME_VERSION', ?, 'CLEANED')",
                     UUID.randomUUID(), requestId, versionId);
         }
+        for (UUID versionId : jdbc.queryForList("SELECT id FROM material_jd_version WHERE resume_id = ?",
+                UUID.class, resumeId)) {
+            jdbc.update("INSERT INTO material_cleanup_item"
+                    + "(id, delete_request_id, target_type, target_id, state) "
+                    + "VALUES (?, ?, 'JD_VERSION', ?, 'CLEANED')", UUID.randomUUID(), requestId, versionId);
+        }
+        jdbc.update("DELETE FROM material_jd_version WHERE resume_id = ?", resumeId);
         jdbc.update("DELETE FROM material_resume_version WHERE resume_id = ?", resumeId);
         jdbc.update("UPDATE material_resume SET state = 'DELETED', generation = generation + 1, "
                 + "deleted_at = ? WHERE id = ? AND state = 'ACTIVE'", now, resumeId);

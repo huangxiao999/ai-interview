@@ -1,4 +1,5 @@
-# P2-DT-01: isolated real-PG16 HTTP/transaction verification. Retains the test database.
+# P2-DT-01/02: isolated real-PG16 version/HTTP/transaction/browser checks.
+# Retain the original database prefix for existing isolation guards and historical evidence.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
