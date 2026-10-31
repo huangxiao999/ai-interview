@@ -111,7 +111,7 @@ try {
       failLookup: false, failNextMe: false,
       invalidateNextPost: false, invalidateNextDelete: false,
       meCalls: 0, csrfCalls: 0,
-      postOperations: [] }
+      postOperations: [], versionOperations: [], failVersionBody: false, failVersionLookup: false }
     window.fetch = async (input, init) => {
       const pathname = new URL(input instanceof Request ? input.url : input, location.href).pathname
       if (pathname === '/api/auth/me') window.p2Hooks.meCalls += 1
@@ -142,6 +142,18 @@ try {
       }
       if (pathname.startsWith('/api/materials/resumes/operations/') && window.p2Hooks.failLookup) {
         throw new TypeError('synthetic operation lookup interruption')
+      }
+      if (pathname.includes('/jd-operations/') && window.p2Hooks.failVersionLookup) {
+        throw new TypeError('synthetic version lookup interruption')
+      }
+      if (pathname.endsWith('/jd-versions') && init?.method === 'POST') {
+        window.p2Hooks.versionOperations.push(init.headers['X-Operation-Id'])
+        const response = await nativeFetch(input, init)
+        if (response.ok && window.p2Hooks.failVersionBody) {
+          window.p2Hooks.failVersionBody = false
+          return { ok: true, json: async () => { throw new TypeError('synthetic JD body interruption') } }
+        }
+        return response
       }
       if (pathname === '/api/materials/resumes' && init?.method === 'POST') {
         window.p2Hooks.postOperations.push(init.headers['X-Operation-Id'])
@@ -285,12 +297,58 @@ try {
     .find(button => button.textContent.includes('确认删除')).click()`)
   await waitUntil(`document.querySelectorAll('.material-list li').length === ${beforeUnknownCount}`,
     'unknown-case cleanup')
+  await evaluate(`document.querySelector('.material-list li:first-child button').click()`)
+  await waitUntil(`!!document.querySelector('#jd-body')`, 'version editing panel')
+  const jdFirst = 'Java后端目标岗位' + 'J'.repeat(70)
+  const jdSecond = '第二版Java后端目标岗位' + 'K'.repeat(70)
+  await evaluate(`(() => {
+    const input = document.querySelector('#jd-body')
+    input.value = ${JSON.stringify(jdFirst)}
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    window.p2Hooks.failVersionBody = true
+    window.p2Hooks.failVersionLookup = true
+    Array.from(document.querySelectorAll('button')).find(button => button.textContent.includes('确认并保存JD版本')).click()
+  })()`)
+  await waitUntil(`document.body.innerText.includes('暂时无法确认版本是否保存')`, 'unknown JD save')
+  assert.equal(await evaluate(`window.p2Hooks.versionOperations.length`), 1)
+  await evaluate(`window.p2Hooks.failNextMe = true;
+    Array.from(document.querySelectorAll('button')).find(button => button.textContent.includes('沿用原操作重试版本')).click()`)
+  await waitUntil(`document.body.innerText.includes('暂时无法核实登录身份') && !!document.querySelector('#jd-body')`, 'JD precheck recovery')
+  assert.equal(await evaluate(`window.p2Hooks.versionOperations.length`), 1)
+  assert.equal(await evaluate(`document.querySelector('#jd-body').value`), jdFirst)
+  assert.equal(await evaluate(`!!Array.from(document.querySelectorAll('button')).find(button => button.textContent.includes('核实版本保存结果'))`), true)
+  await evaluate(`window.p2Hooks.failVersionLookup = false;
+    Array.from(document.querySelectorAll('button')).find(button => button.textContent.includes('沿用原操作重试版本')).click()`)
+  await waitUntil(`document.body.innerText.includes('JD第 1 版已确认保存') && !!document.querySelector('[data-jd-version="1"]')`, 'original JD operation restored')
+  assert.equal(await evaluate(`window.p2Hooks.versionOperations[0] === window.p2Hooks.versionOperations[1]`), true)
+  assert.equal(await evaluate(`document.querySelectorAll('[data-jd-version]').length`), 1)
+  await waitUntil(`!document.querySelector('#jd-body')?.disabled`, 'JD save completion')
+  await evaluate(`(() => {
+    const input = document.querySelector('#jd-body')
+    input.value = ${JSON.stringify(jdSecond)}
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    Array.from(document.querySelectorAll('button')).find(button => button.textContent.includes('确认并保存JD版本')).click()
+  })()`)
+  await waitUntil(`!!document.querySelector('[data-jd-version="2"]') && !document.querySelector('[data-jd-version="1"]').disabled`, 'second JD version')
+  await evaluate(`document.querySelector('[data-jd-version="1"]').click()`)
+  await waitUntil(`document.querySelector('[aria-label="JD详情"] pre')?.textContent === ${JSON.stringify(jdFirst)}`, 'fixed JD V1')
+  const resumeSecond = synthetic + '\n简历第二版'
+  await evaluate(`(() => {
+    const input = document.querySelector('#resume-version-body')
+    input.value = ${JSON.stringify(resumeSecond)}
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    Array.from(document.querySelectorAll('button')).find(button => button.textContent.includes('保存简历新版本')).click()
+  })()`)
+  await waitUntil(`!!document.querySelector('[data-resume-version="2"]') && !document.querySelector('[data-resume-version="1"]').disabled`, 'second resume version')
+  await evaluate(`document.querySelector('[data-resume-version="1"]').click()`)
+  await waitUntil(`document.querySelector('[aria-label="简历详情"] pre')?.textContent === ${JSON.stringify(synthetic)}`, 'fixed resume V1')
   await evaluate(`Array.from(document.querySelectorAll('button'))
     .find(button => button.textContent.includes('退出登录')).click()`)
   await login()
   await waitUntil(`!!document.querySelector('.material-list li')`, 'resume history after re-login')
   await evaluate(`document.querySelector('.material-list li:first-child button').click()`)
   await waitUntil(`document.body.innerText.includes(${JSON.stringify(synthetic)})`, 'saved resume detail')
+  await waitUntil(`document.querySelectorAll('[data-jd-version]').length === 2`, 'JD history after re-login')
   const beforeLateDeleteCount = await evaluate(`document.querySelectorAll('.material-list li').length`)
   await evaluate(`(() => {
     window.p2Hooks.holdNextList = true
@@ -303,7 +361,7 @@ try {
   await evaluate(`Array.from(document.querySelectorAll('.material-list li:first-child button'))
     .find(button => button.textContent.includes('删除整份')).click()`)
   await waitUntil(`document.body.innerText.includes('确认删除整份简历')`, 'deletion confirmation')
-  assert.equal(await evaluate(`document.body.innerText.includes('当前的 1 个正文版本')`), true)
+  assert.equal(await evaluate(`document.body.innerText.includes('当前的 2 个正文版本和 2 个JD版本')`), true)
   const beforeDeleteCsrf = await evaluate(`({ me: window.p2Hooks.meCalls,
     csrf: window.p2Hooks.csrfCalls })`)
   await evaluate(`(() => {
@@ -328,8 +386,9 @@ try {
     beforeLateDeleteCount - 1, 'older list response must not restore the deleted resume')
   assert.equal(await evaluate(`window.p2Hooks.csrfCalls > ${beforeDeleteCsrf.csrf}`), true)
   assert.equal(await evaluate(`document.body.innerText.includes(${JSON.stringify(synthetic)})`), false)
+  await evaluate(`window.p2BeforeReload = true`)
   await send('Page.reload', {}, sessionId)
-  await waitUntil(`location.pathname === '/app' && !!document.querySelector('#resume-body')`, 'workspace reload')
+  await waitUntil(`!window.p2BeforeReload && location.pathname === '/app' && !!document.querySelector('#resume-body')`, 'workspace reload')
   assert.equal(await evaluate(`document.body.innerText.includes(${JSON.stringify(synthetic)})`), false)
 
   const raceBody = '账号切换期间的合成草稿' + 'R'.repeat(110)

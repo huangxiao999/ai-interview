@@ -59,10 +59,23 @@ class ResumeMaterialIT {
                 Integer.class)).isZero();
         Flyway flyway = Flyway.configure().dataSource(url, username, password)
                 .defaultSchema("app").schemas("app").createSchemas(true)
-                .locations("classpath:db/migration").load();
+                .locations("classpath:db/migration").target("3").load();
         assertThat(flyway.migrate().migrationsExecuted).isEqualTo(3);
-        assertThat(flyway.migrate().migrationsExecuted).isZero();
         jdbc = new JdbcTemplate(new DriverManagerDataSource(url + "?currentSchema=app", username, password));
+        Account legacy = insertAccount(Set.of(AccountAuthority.TRIAL_USER));
+        UUID legacyRoot = UUID.randomUUID();
+        UUID legacyVersion = UUID.randomUUID();
+        jdbc.update("INSERT INTO material_resume(id,owner_account_id,create_operation_id) VALUES(?,?,?)",
+                legacyRoot, legacy.id(), UUID.randomUUID());
+        jdbc.update("INSERT INTO material_resume_version(id,resume_id,version_no,operation_id,body,codepoint_count) "
+                + "VALUES(?,?,1,?,?,100)", legacyVersion, legacyRoot, UUID.randomUUID(), "L".repeat(100));
+        flyway = Flyway.configure().dataSource(url, username, password).defaultSchema("app")
+                .schemas("app").locations("classpath:db/migration").load();
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
+        assertThat(flyway.migrate().migrationsExecuted).isZero();
+        flyway.validate();
+        assertThat(jdbc.queryForObject("SELECT body FROM material_resume_version WHERE id = ?",
+                String.class, legacyVersion)).isEqualTo("L".repeat(100));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM flyway_schema_history "
                 + "WHERE success AND version = '3'", Integer.class)).isEqualTo(1);
         a = insertAccount(Set.of(AccountAuthority.TRIAL_USER));
@@ -354,6 +367,161 @@ class ResumeMaterialIT {
                 Integer.class, deleteRoot)).isEqualTo(1);
     }
 
+    @Test
+    void jdBoundariesHistoryAndOriginalOperationRemainFixed() throws Exception {
+        Client user = new Client(a);
+        UUID root = UUID.fromString((String) json(user.create("r".repeat(100), UUID.randomUUID())).get("resumeId"));
+        String path = "/api/materials/resumes/" + root;
+        for (String invalid : new String[] {"j".repeat(49), "j".repeat(10_001), " \r\n "}) {
+            assertThat(user.addJd(root, invalid, UUID.randomUUID()).statusCode()).isEqualTo(400);
+        }
+        assertThat(user.send("POST", path + "/jd-versions", "{\"body\":null}", user.token,
+                UUID.randomUUID()).statusCode()).isEqualTo(400);
+        UUID operation = UUID.randomUUID();
+        String firstBody = "😀".repeat(48) + "\r\nJ";
+        var firstResponse = user.addJd(root, "  " + firstBody + "\r\n", operation);
+        assertThat(firstResponse.statusCode()).isEqualTo(201);
+        var first = json(firstResponse);
+        assertThat(first.get("codepointCount")).isEqualTo(50);
+        assertThat(first.get("body")).isEqualTo("😀".repeat(48) + "\nJ");
+        assertThat(first.get("versionNo")).isEqualTo(1);
+        assertThat(user.addJd(root, "z".repeat(50), operation).statusCode()).isEqualTo(409);
+        var second = json(user.addJd(root, "J".repeat(10_000), UUID.randomUUID()));
+        assertThat(second.get("versionNo")).isEqualTo(2);
+        assertThat(second.get("codepointCount")).isEqualTo(10_000);
+        assertThat(json(user.addJd(root, firstBody, operation))).isEqualTo(first);
+        assertThat(json(user.get(path + "/jd-operations/" + operation))).isEqualTo(first);
+        assertThat(json(user.get(path + "/jd-versions/" + first.get("versionId")))).isEqualTo(first);
+        var history = JsonParserFactory.getJsonParser().parseList(user.get(path + "/jd-versions").body());
+        assertThat(history).extracting(value -> (Integer) ((Map<?, ?>) value).get("versionNo")).containsExactly(2, 1);
+        assertThat(user.get(path + "/versions").statusCode()).isEqualTo(200);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM material_jd_version WHERE resume_id = ?",
+                Integer.class, root)).isEqualTo(2);
+    }
+
+    @Test
+    void jdAndVersionEndpointsEnforceOwnerCsrfAndExpectedIdentity() throws Exception {
+        Client owner = new Client(a);
+        Client other = new Client(b);
+        Client keeper = new Client(maintainer);
+        Client anonymous = new Client();
+        anonymous.csrf();
+        var created = json(owner.create("r".repeat(100), UUID.randomUUID()));
+        UUID root = UUID.fromString((String) created.get("resumeId"));
+        UUID operation = UUID.randomUUID();
+        var jd = json(owner.addJd(root, "j".repeat(50), operation));
+        String path = "/api/materials/resumes/" + root;
+        for (String suffix : new String[] {"/versions", "/versions/" + created.get("versionId"),
+                "/jd-versions", "/jd-versions/" + jd.get("versionId"), "/jd-operations/" + operation}) {
+            assertThat(anonymous.get(path + suffix).statusCode()).isEqualTo(401);
+            assertThat(other.get(path + suffix).statusCode()).isEqualTo(404);
+            assertThat(keeper.get(path + suffix).statusCode()).isEqualTo(403);
+        }
+        assertThat(other.addJd(root, "b".repeat(50), UUID.randomUUID()).statusCode()).isEqualTo(404);
+        assertThat(keeper.addJd(root, "k".repeat(50), UUID.randomUUID()).statusCode()).isEqualTo(403);
+        assertThat(anonymous.addJd(root, "x".repeat(50), UUID.randomUUID()).statusCode()).isEqualTo(401);
+        assertThat(owner.send("POST", path + "/jd-versions", owner.bodyJson("j".repeat(50)),
+                null, UUID.randomUUID()).statusCode()).isEqualTo(403);
+        owner.expectedAccountId = b.id();
+        assertThat(owner.addJd(root, "j".repeat(50), UUID.randomUUID()).statusCode()).isEqualTo(409);
+        owner.expectedAccountId = a.id();
+        UUID otherRoot = UUID.fromString((String) json(owner.create("x".repeat(100), UUID.randomUUID())).get("resumeId"));
+        assertThat(owner.get("/api/materials/resumes/" + otherRoot + "/jd-versions/" + jd.get("versionId"))
+                .statusCode()).isEqualTo(404);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM material_jd_version WHERE resume_id = ?",
+                Integer.class, root)).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentJdConfirmationAllocatesOneVersionPerOperation() throws Exception {
+        Client first = new Client(a);
+        Client second = new Client(a);
+        UUID root = UUID.fromString((String) json(first.create("r".repeat(100), UUID.randomUUID())).get("resumeId"));
+        UUID sameOperation = UUID.randomUUID();
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var one = executor.submit(() -> first.addJd(root, "j".repeat(50), sameOperation));
+            var two = executor.submit(() -> second.addJd(root, "j".repeat(50), sameOperation));
+            assertThat(json(one.get(30, TimeUnit.SECONDS))).isEqualTo(json(two.get(30, TimeUnit.SECONDS)));
+            var three = executor.submit(() -> first.addJd(root, "a".repeat(50), UUID.randomUUID()));
+            var four = executor.submit(() -> second.addJd(root, "b".repeat(50), UUID.randomUUID()));
+            assertThat(three.get(30, TimeUnit.SECONDS).statusCode()).isEqualTo(201);
+            assertThat(four.get(30, TimeUnit.SECONDS).statusCode()).isEqualTo(201);
+        }
+        assertThat(jdbc.queryForList("SELECT version_no FROM material_jd_version WHERE resume_id = ? ORDER BY version_no",
+                Integer.class, root)).containsExactly(1, 2, 3);
+    }
+
+    @Test
+    void jdCleanupFailureRollsBackAllFactsAndRetryCleansBothKinds() throws Exception {
+        Client user = new Client(a);
+        UUID root = UUID.fromString((String) json(user.create("r".repeat(100), UUID.randomUUID())).get("resumeId"));
+        var jd = json(user.addJd(root, "j".repeat(50), UUID.randomUUID()));
+        UUID untouchedRoot = UUID.fromString((String) json(new Client(b).create("b".repeat(100), UUID.randomUUID())).get("resumeId"));
+        assertThat(json(user.get("/api/materials/resumes/" + root + "/deletion-impact")))
+                .containsEntry("versionCount", 1).containsEntry("jdVersionCount", 1);
+        jdbc.execute("CREATE FUNCTION app.fail_jd_cleanup() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+                + "IF NEW.target_type = 'JD_VERSION' THEN RAISE EXCEPTION 'synthetic JD cleanup failure'; END IF; "
+                + "RETURN NEW; END $$");
+        jdbc.execute("CREATE TRIGGER fail_jd_cleanup BEFORE INSERT ON material_cleanup_item FOR EACH ROW EXECUTE FUNCTION app.fail_jd_cleanup()");
+        try {
+            assertThat(user.delete(root, true).statusCode()).isEqualTo(503);
+            assertThat(jdbc.queryForObject("SELECT state FROM material_resume WHERE id = ?", String.class, root)).isEqualTo("ACTIVE");
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM material_jd_version WHERE resume_id = ?", Integer.class, root)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM material_resume_version WHERE resume_id = ?", Integer.class, root)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM material_delete_request WHERE resume_id = ?", Integer.class, root)).isZero();
+        } finally {
+            jdbc.execute("DROP TRIGGER fail_jd_cleanup ON material_cleanup_item");
+            jdbc.execute("DROP FUNCTION app.fail_jd_cleanup()");
+        }
+        var deleted = json(user.delete(root, true));
+        assertThat(json(user.delete(root, true))).isEqualTo(deleted);
+        assertThat(user.get("/api/materials/resumes/" + root + "/jd-versions/" + jd.get("versionId")).statusCode()).isEqualTo(404);
+        assertThat(user.addJd(root, "x".repeat(50), UUID.randomUUID()).statusCode()).isEqualTo(404);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM material_jd_version WHERE resume_id = ?", Integer.class, root)).isZero();
+        assertThat(jdbc.queryForList("SELECT target_type FROM material_cleanup_item WHERE delete_request_id = ? ORDER BY target_type",
+                String.class, UUID.fromString((String) deleted.get("requestId")))).containsExactly("JD_VERSION", "RESUME_VERSION");
+        assertThat(new Client(b).get("/api/materials/resumes/" + untouchedRoot).statusCode()).isEqualTo(200);
+    }
+
+    @Test
+    void jdAndDeleteAreSerializedInBothOrders() throws Exception {
+        for (boolean jdFirst : new boolean[] {true, false}) {
+            Account owner = insertAccount(Set.of(AccountAuthority.TRIAL_USER));
+            Client writeClient = new Client(owner);
+            Client deleteClient = new Client(owner);
+            UUID root = UUID.fromString((String) json(writeClient.create("r".repeat(100), UUID.randomUUID())).get("resumeId"));
+            try (var locked = DriverManager.getConnection(System.getenv("DB_URL") + "?currentSchema=app",
+                    System.getenv("DB_USERNAME"), System.getenv("DB_PASSWORD")); var executor = Executors.newFixedThreadPool(2)) {
+                locked.setAutoCommit(false);
+                try (var statement = locked.prepareStatement("SELECT id FROM identity_account WHERE id = ? FOR UPDATE")) {
+                    statement.setObject(1, owner.id());
+                    assertThat(statement.executeQuery().next()).isTrue();
+                }
+                MaterialWrite add = () -> writeClient.addJd(root, "j".repeat(50), UUID.randomUUID());
+                MaterialWrite remove = () -> deleteClient.delete(root, true);
+                var first = executor.submit(() -> (jdFirst ? add : remove).send().statusCode());
+                awaitAccountLockWaiters(1);
+                var second = executor.submit(() -> (jdFirst ? remove : add).send().statusCode());
+                awaitAccountLockWaiters(2);
+                locked.commit();
+                assertThat(first.get(30, TimeUnit.SECONDS)).isEqualTo(jdFirst ? 201 : 200);
+                assertThat(second.get(30, TimeUnit.SECONDS)).isEqualTo(jdFirst ? 200 : 404);
+            }
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM material_jd_version WHERE resume_id = ?", Integer.class, root)).isZero();
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM material_cleanup_item i JOIN material_delete_request d ON d.id=i.delete_request_id "
+                    + "WHERE d.resume_id=? AND i.target_type='JD_VERSION'", Integer.class, root)).isEqualTo(jdFirst ? 1 : 0);
+        }
+    }
+
+    @Test
+    void resetBeforeJdWriteObtainsLockRevokesLateRequest() throws Exception {
+        Account owner = insertAccount(Set.of(AccountAuthority.TRIAL_USER));
+        Client user = new Client(owner);
+        UUID root = UUID.fromString((String) json(user.create("r".repeat(100), UUID.randomUUID())).get("resumeId"));
+        assertLateWriteRevoked(owner, () -> user.addJd(root, "j".repeat(50), UUID.randomUUID()));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM material_jd_version WHERE resume_id = ?", Integer.class, root)).isZero();
+    }
+
     private static void assertLateWriteRevoked(Account owner, MaterialWrite write) throws Exception {
         String url = System.getenv("DB_URL") + "?currentSchema=app";
         try (var locked = DriverManager.getConnection(url, System.getenv("DB_USERNAME"),
@@ -445,6 +613,10 @@ class ResumeMaterialIT {
         HttpResponse<String> addVersion(UUID root, String body, UUID operation) throws Exception {
             return send("POST", "/api/materials/resumes/" + root + "/versions",
                     bodyJson(body), token, operation);
+        }
+
+        HttpResponse<String> addJd(UUID root, String body, UUID operation) throws Exception {
+            return send("POST", "/api/materials/resumes/" + root + "/jd-versions", bodyJson(body), token, operation);
         }
 
         HttpResponse<String> delete(UUID root, boolean withCsrf) throws Exception {

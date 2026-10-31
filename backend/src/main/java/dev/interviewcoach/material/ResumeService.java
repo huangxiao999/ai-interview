@@ -90,10 +90,48 @@ final class ResumeService {
                 .orElseThrow(MaterialUnavailable::new);
     }
 
-    int deletionImpact(Actor actor, UUID resumeId) {
+    ResumeRepository.Detail addJdVersion(Actor actor, UUID expectedAccountId, UUID resumeId,
+            UUID operationId, String rawBody) {
         requireTrial(actor);
-        requireActiveRoot(actor, resumeId);
-        return repository.countVersions(resumeId);
+        var body = ResumeText.normalizeJd(rawBody);
+        return transaction.execute(status -> {
+            // 固定锁顺序：M-01 当前凭证与权限 → M-02 删除根 → 版本接受。
+            requireCurrentTrial(actor, expectedAccountId);
+            requireActiveRoot(actor, resumeId);
+            var previous = repository.jdDetail(actor.accountId(), resumeId, null, operationId);
+            if (previous.isPresent()) {
+                assertSameOperationBody(previous.get(), body);
+                return previous.get();
+            }
+            repository.insertJdVersion(UUID.randomUUID(), resumeId, operationId, body);
+            return repository.jdDetail(actor.accountId(), resumeId, null, operationId)
+                    .orElseThrow(IllegalStateException::new);
+        });
+    }
+
+    List<ResumeRepository.Summary> versions(Actor actor, UUID resumeId, boolean jdVersion) {
+        requireTrial(actor);
+        return transaction.execute(status -> {
+            requireActiveRoot(actor, resumeId);
+            return repository.versions(actor.accountId(), resumeId, jdVersion);
+        });
+    }
+
+    ResumeRepository.Detail jdDetail(Actor actor, UUID resumeId, UUID versionId, UUID operationId) {
+        requireTrial(actor);
+        return repository.jdDetail(actor.accountId(), resumeId, versionId, operationId)
+                .orElseThrow(MaterialUnavailable::new);
+    }
+
+    DeletionImpact deletionImpact(Actor actor, UUID resumeId) {
+        requireTrial(actor);
+        return transaction.execute(status -> {
+            requireActiveRoot(actor, resumeId);
+            return new DeletionImpact(repository.countVersions(resumeId), repository.countJdVersions(resumeId));
+        });
+    }
+
+    record DeletionImpact(int versionCount, int jdVersionCount) {
     }
 
     ResumeRepository.Deletion delete(Actor actor, UUID expectedAccountId, UUID resumeId) {

@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session'
 import { useMaterialsStore } from '../stores/materials'
 import { ApiError } from '../api/http'
+import MaterialVersionsPanel from './MaterialVersionsPanel.vue'
 import {
   createResume,
   deleteResume,
@@ -29,6 +30,8 @@ const {
   pendingDelete,
   confirmDeleteId,
   deleteVersionCount,
+  deleteJdVersionCount,
+  pendingVersionSave,
 } = storeToRefs(materials)
 
 watch(
@@ -91,7 +94,7 @@ async function saveDraft(): Promise<void> {
     pendingOperation.value = null
     draft.value = ''
     selected.value = detail
-    materialsMessage.value = '简历正文已保存为第 1 版。岗位 JD 将在后续任务中开放。'
+    materialsMessage.value = '简历正文已保存为第 1 版。可继续确认 JD 或追加资料版本。'
     await loadItems(generation)
   } catch (error: unknown) {
     if (generation === materials.generation) {
@@ -157,6 +160,7 @@ async function prepareDelete(resumeId: string): Promise<void> {
     if (generation !== materials.generation) return
     confirmDeleteId.value = resumeId
     deleteVersionCount.value = impact.versionCount
+    deleteJdVersionCount.value = impact.jdVersionCount
   } catch (error: unknown) {
     if (generation === materials.generation) showError(error)
   } finally {
@@ -185,6 +189,7 @@ async function confirmDelete(): Promise<void> {
     confirmDeleteId.value = null
     pendingDelete.value = null
     selected.value = null
+    materials.selectVersionRoot(null)
     materialsMessage.value =
       result.state === 'CLEANED' ? '简历及当前正文已删除。' : '删除已受理，资料已禁访。'
     await loadItems(generation)
@@ -207,6 +212,7 @@ async function verifyDelete(): Promise<void> {
     pendingDelete.value = null
     confirmDeleteId.value = null
     selected.value = null
+    materials.selectVersionRoot(null)
     materialsMessage.value = `已核实删除状态：${result.state === 'CLEANED' ? '当前正文已清理' : '资料已禁访'}`
     await loadItems(generation)
   } catch (error: unknown) {
@@ -262,7 +268,7 @@ async function retryIdentity(): Promise<void> {
       <p class="eyebrow">我的练习空间</p>
       <h1 id="workspace-heading">我的简历</h1>
       <template v-if="identity?.authorities.includes('TRIAL_USER')">
-        <p>可先粘贴并保存简历正文。PDF/DOCX、岗位 JD 和面试训练将在后续任务中开放。</p>
+        <p>可粘贴简历、确认 JD 并查看资料版本。PDF/DOCX 和面试训练将在后续任务中开放。</p>
         <div class="material-grid">
           <section aria-labelledby="resume-input-heading">
             <h2 id="resume-input-heading">新建简历</h2>
@@ -271,7 +277,7 @@ async function retryIdentity(): Promise<void> {
               id="resume-body"
               v-model="draft"
               rows="10"
-              :disabled="materialsBusy || pendingOperation !== null"
+              :disabled="materialsBusy || pendingOperation !== null || !!pendingVersionSave"
               placeholder="粘贴简历正文，确认后保存为第 1 版"
             />
             <p class="field-help">
@@ -280,7 +286,7 @@ async function retryIdentity(): Promise<void> {
             <button
               type="button"
               class="button-primary"
-              :disabled="materialsBusy || pendingOperation !== null"
+              :disabled="materialsBusy || pendingOperation !== null || !!pendingVersionSave"
               @click="saveDraft"
             >
               {{ materialsBusy ? '正在保存…' : '确认并保存简历' }}
@@ -313,7 +319,7 @@ async function retryIdentity(): Promise<void> {
                 <button
                   type="button"
                   class="button-secondary"
-                  :disabled="materialsBusy"
+                  :disabled="materialsBusy || !!pendingVersionSave"
                   @click="openResume(item.resumeId)"
                 >
                   查看
@@ -321,7 +327,7 @@ async function retryIdentity(): Promise<void> {
                 <button
                   type="button"
                   class="button-secondary"
-                  :disabled="materialsBusy"
+                  :disabled="materialsBusy || !!pendingVersionSave"
                   @click="prepareDelete(item.resumeId)"
                 >
                   删除整份
@@ -341,8 +347,14 @@ async function retryIdentity(): Promise<void> {
         <section v-if="selected" class="material-detail" aria-label="简历详情">
           <h2>已确认简历 · 第 {{ selected.versionNo }} 版</h2>
           <p>{{ selected.codepointCount }} 字符</p>
+          <p>简历版本ID：{{ selected.versionId }}</p>
           <pre>{{ selected.body }}</pre>
         </section>
+        <MaterialVersionsPanel
+          v-if="selected"
+          :resume-id="selected.resumeId"
+          @saved="loadItems()"
+        />
         <section
           v-if="confirmDeleteId"
           class="material-delete"
@@ -351,7 +363,8 @@ async function retryIdentity(): Promise<void> {
         >
           <h2>确认删除整份简历？</h2>
           <p>
-            将删除该简历当前的 {{ deleteVersionCount }} 个正文版本。删除受理后立即禁访且无法撤销。
+            将删除该简历当前的 {{ deleteVersionCount }} 个正文版本和
+            {{ deleteJdVersionCount }} 个JD版本。删除受理后立即禁访且无法撤销。
           </p>
           <button
             type="button"

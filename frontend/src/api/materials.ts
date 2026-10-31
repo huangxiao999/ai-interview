@@ -15,6 +15,7 @@ export interface ResumeDetail extends ResumeSummary {
 
 export interface DeletionImpact {
   versionCount: number
+  jdVersionCount: number
 }
 
 export interface DeletionStatus {
@@ -174,12 +175,86 @@ export function deletionImpact(resumeId: string): Promise<DeletionImpact> {
     `/api/materials/resumes/${encodeURIComponent(resumeId)}/deletion-impact`,
     (payload) => {
       const value = requireRecord(payload)
-      if (typeof value.versionCount !== 'number') {
+      if (typeof value.versionCount !== 'number' || typeof value.jdVersionCount !== 'number') {
         throw new ApiError(null, 'INVALID_RESPONSE', '删除范围响应格式无法识别')
       }
-      return { versionCount: value.versionCount }
+      return { versionCount: value.versionCount, jdVersionCount: value.jdVersionCount }
     },
   )
+}
+
+export type VersionKind = 'resume' | 'jd'
+
+function versionPath(resumeId: string, kind: VersionKind): string {
+  return `/api/materials/resumes/${encodeURIComponent(resumeId)}/${kind === 'jd' ? 'jd-versions' : 'versions'}`
+}
+
+export function listVersions(resumeId: string, kind: VersionKind): Promise<ResumeSummary[]> {
+  return getJson(versionPath(resumeId, kind), (payload) => {
+    if (!Array.isArray(payload))
+      throw new ApiError(null, 'INVALID_RESPONSE', '版本列表格式无法识别')
+    return payload.map(parseSummary)
+  })
+}
+
+export function getVersion(
+  resumeId: string,
+  kind: VersionKind,
+  versionId: string,
+): Promise<ResumeDetail> {
+  return getJson(`${versionPath(resumeId, kind)}/${encodeURIComponent(versionId)}`, parseDetail)
+}
+
+export function getVersionOperation(
+  resumeId: string,
+  kind: VersionKind,
+  operationId: string,
+): Promise<ResumeDetail> {
+  const operationPath = kind === 'jd' ? 'jd-operations' : 'operations'
+  return getJson(
+    `/api/materials/resumes/${encodeURIComponent(resumeId)}/${operationPath}/${encodeURIComponent(operationId)}`,
+    parseDetail,
+  )
+}
+
+export async function confirmVersion(
+  resumeId: string,
+  kind: VersionKind,
+  body: string,
+  operationId: string,
+  owner: MaterialWriteOwner,
+): Promise<ResumeDetail> {
+  let acceptedResponse = false
+  try {
+    const response = await materialWriteRequest(
+      versionPath(resumeId, kind),
+      {
+        method: 'POST',
+        headers: {
+          ...(await csrfHeader()),
+          'Content-Type': 'application/json',
+          'X-Operation-Id': operationId,
+        },
+        body: JSON.stringify({ body }),
+      },
+      owner,
+    )
+    acceptedResponse = true
+    return await readSuccess(response, parseDetail)
+  } catch (error: unknown) {
+    if (
+      !acceptedResponse &&
+      error instanceof ApiError &&
+      error.status !== null &&
+      error.status < 500
+    )
+      throw error
+    try {
+      return await getVersionOperation(resumeId, kind, operationId)
+    } catch {
+      throw new ApiError(null, 'RESULT_UNKNOWN', '暂时无法确认版本是否保存，请核实原操作')
+    }
+  }
 }
 
 export function getDeletion(resumeId: string): Promise<DeletionStatus> {

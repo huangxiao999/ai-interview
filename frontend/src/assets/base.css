@@ -201,7 +201,8 @@ button:focus-visible,
   margin-top: 24px;
 }
 
-.material-grid textarea {
+.material-grid textarea,
+.material-detail textarea {
   width: 100%;
   box-sizing: border-box;
   font: inherit;
@@ -211,6 +212,7 @@ button:focus-visible,
 }
 
 .material-grid button,
+.material-detail button,
 .material-delete button {
   margin: 4px 8px 4px 0;
 }

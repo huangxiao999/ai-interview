@@ -78,6 +78,43 @@ final class ResumeApi {
                 .body(ResumeDetail.from(service.detail(currentActor.require(authentication), resumeId, versionId)));
     }
 
+    @GetMapping("/{resumeId}/versions")
+    ResponseEntity<List<ResumeSummary>> versions(Authentication authentication, @PathVariable UUID resumeId) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(service.versions(currentActor.require(authentication), resumeId, false).stream()
+                        .map(ResumeSummary::from).toList());
+    }
+
+    @PostMapping("/{resumeId}/jd-versions")
+    ResponseEntity<ResumeDetail> addJdVersion(Authentication authentication, @PathVariable UUID resumeId,
+            @RequestHeader("X-Expected-Account-Id") UUID expectedAccountId,
+            @RequestHeader("X-Operation-Id") UUID operationId, @RequestBody BodyInput input) {
+        return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore())
+                .body(ResumeDetail.from(service.addJdVersion(currentActor.require(authentication),
+                        expectedAccountId, resumeId, operationId, input == null ? null : input.body())));
+    }
+
+    @GetMapping("/{resumeId}/jd-versions")
+    ResponseEntity<List<ResumeSummary>> jdVersions(Authentication authentication, @PathVariable UUID resumeId) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(service.versions(currentActor.require(authentication), resumeId, true).stream()
+                        .map(ResumeSummary::from).toList());
+    }
+
+    @GetMapping("/{resumeId}/jd-versions/{versionId}")
+    ResponseEntity<ResumeDetail> jdVersion(Authentication authentication, @PathVariable UUID resumeId,
+            @PathVariable UUID versionId) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(ResumeDetail.from(service.jdDetail(currentActor.require(authentication), resumeId, versionId, null)));
+    }
+
+    @GetMapping("/{resumeId}/jd-operations/{operationId}")
+    ResponseEntity<ResumeDetail> jdByOperation(Authentication authentication, @PathVariable UUID resumeId,
+            @PathVariable UUID operationId) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(ResumeDetail.from(service.jdDetail(currentActor.require(authentication), resumeId, null, operationId)));
+    }
+
     @GetMapping("/{resumeId}/operations/{operationId}")
     ResponseEntity<ResumeDetail> versionByOperation(Authentication authentication,
             @PathVariable UUID resumeId, @PathVariable UUID operationId) {
@@ -88,8 +125,9 @@ final class ResumeApi {
 
     @GetMapping("/{resumeId}/deletion-impact")
     ResponseEntity<DeletionImpact> deletionImpact(Authentication authentication, @PathVariable UUID resumeId) {
+        var impact = service.deletionImpact(currentActor.require(authentication), resumeId);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(new DeletionImpact(service.deletionImpact(currentActor.require(authentication), resumeId)));
+                .body(new DeletionImpact(impact.versionCount(), impact.jdVersionCount()));
     }
 
     @DeleteMapping("/{resumeId}")
@@ -108,7 +146,7 @@ final class ResumeApi {
     record BodyInput(String body) {
     }
 
-    record DeletionImpact(int versionCount) {
+    record DeletionImpact(int versionCount, int jdVersionCount) {
     }
 
     record ResumeSummary(UUID resumeId, UUID versionId, int versionNo, int codepointCount,

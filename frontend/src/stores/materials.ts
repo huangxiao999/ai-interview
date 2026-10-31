@@ -1,7 +1,14 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { Identity, SessionStatus } from './session'
-import type { ResumeDetail, ResumeSummary } from '../api/materials'
+import type { ResumeDetail, ResumeSummary, VersionKind } from '../api/materials'
+
+interface PendingVersionSave {
+  resumeId: string
+  kind: VersionKind
+  body: string
+  operationId: string
+}
 
 export const useMaterialsStore = defineStore('materials', () => {
   const draft = ref('')
@@ -13,6 +20,16 @@ export const useMaterialsStore = defineStore('materials', () => {
   const pendingDelete = ref<string | null>(null)
   const confirmDeleteId = ref<string | null>(null)
   const deleteVersionCount = ref(0)
+  const deleteJdVersionCount = ref(0)
+  const versionResumeId = ref<string | null>(null)
+  const resumeVersions = ref<ResumeSummary[]>([])
+  const jdVersions = ref<ResumeSummary[]>([])
+  const selectedJd = ref<ResumeDetail | null>(null)
+  const resumeVersionDraft = ref('')
+  const jdDraft = ref('')
+  const pendingVersionSave = ref<PendingVersionSave | null>(null)
+  const versionMessage = ref('')
+  const versionRequestId = ref(0)
   const generation = ref(0)
   const listRequestId = ref(0)
   const ownerAccountId = ref<string | null>(null)
@@ -42,6 +59,21 @@ export const useMaterialsStore = defineStore('materials', () => {
     pendingDelete.value = null
     confirmDeleteId.value = null
     deleteVersionCount.value = 0
+    deleteJdVersionCount.value = 0
+    selectVersionRoot(null)
+  }
+
+  function selectVersionRoot(resumeId: string | null): void {
+    versionRequestId.value += 1
+    if (versionResumeId.value === resumeId && resumeId !== null) return
+    versionResumeId.value = resumeId
+    resumeVersions.value = []
+    jdVersions.value = []
+    selectedJd.value = null
+    resumeVersionDraft.value = ''
+    jdDraft.value = ''
+    pendingVersionSave.value = null
+    versionMessage.value = ''
   }
 
   // A temporary identity check hides the view, but does not discard an unresolved operation.
@@ -68,6 +100,17 @@ export const useMaterialsStore = defineStore('materials', () => {
     pendingDelete,
     confirmDeleteId,
     deleteVersionCount,
+    deleteJdVersionCount,
+    versionResumeId,
+    resumeVersions,
+    jdVersions,
+    selectedJd,
+    resumeVersionDraft,
+    jdDraft,
+    pendingVersionSave,
+    versionMessage,
+    versionRequestId,
+    selectVersionRoot,
     generation,
     invalidateListRequests,
     beginListRequest,
