@@ -16,6 +16,7 @@ import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import javax.sql.DataSource;
 import org.flywaydb.core.Flyway;
@@ -40,6 +41,13 @@ class KnowledgeIndexIT {
     static final ObjectMapper JSON=JsonMapper.builder().build();
     static final ConcurrentHashMap<String,Integer> CALLS=new ConcurrentHashMap<>();
     static final AtomicBoolean COMMIT_FAULT=new AtomicBoolean();
+    static final AtomicBoolean ACCEPT_COMMIT_FAULT=new AtomicBoolean();
+    static final AtomicInteger ACCEPT_ACK_LOSSES=new AtomicInteger();
+    static final AtomicBoolean PAUSE_UNAVAILABLE=new AtomicBoolean();
+    static final AtomicInteger PAUSE_FAILURES=new AtomicInteger();
+    static final AtomicBoolean PAUSE_COMMIT_FAULT=new AtomicBoolean();
+    static volatile CountDownLatch pauseCommitted=new CountDownLatch(0);
+    static volatile CountDownLatch releasePauseAck=new CountDownLatch(0);
     static volatile CountDownLatch slowRelease=new CountDownLatch(0);
     static ConfigurableApplicationContext context;
     static HttpServer supplier;
@@ -276,6 +284,74 @@ class KnowledgeIndexIT {
         } finally { slowRelease.countDown();gateway.close(); }
     }
 
+    @Test @Order(16) void failedPauseRegistrationMustNotAutomaticallyAcceptAfterRecovery() throws Exception {
+        jdbc.execute("CREATE FUNCTION fail_pause_accept() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic acceptance fault'; END $$");
+        jdbc.execute("CREATE TRIGGER fail_pause_accept BEFORE INSERT ON knowledge_index_vector FOR EACH ROW EXECUTE FUNCTION fail_pause_accept()");
+        Client a=new Client(maintainer);String id;
+        int failures=PAUSE_FAILURES.get();PAUSE_UNAVAILABLE.set(true);
+        try {
+            id=(String)create(a,approved(a,"[PAUSE_FAILURE] source"),UUID.randomUUID()).get("buildId");
+            await(()->PAUSE_FAILURES.get()>=failures+2);
+        } finally {
+            jdbc.execute("DROP TRIGGER fail_pause_accept ON knowledge_index_vector");jdbc.execute("DROP FUNCTION fail_pause_accept()");
+        }
+        try {
+            // 已恢复接收写入能力；经过多个真实调度周期仍只能补记暂停，不能重新接收。
+            int before=PAUSE_FAILURES.get();await(()->PAUSE_FAILURES.get()>=before+3);
+            assertThat(vectorCount(id)).isZero();assertThat(CALLS.get("[PAUSE_FAILURE]")).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT state FROM knowledge_index_build WHERE id=?",String.class,UUID.fromString(id))).isEqualTo("CANDIDATE_READY");
+        } finally { PAUSE_UNAVAILABLE.set(false); }
+        awaitState(id,"WAITING_MANUAL");
+        String canary=(String)create(a,approved(a,"[PAUSE_CANARY] source"),UUID.randomUUID()).get("buildId");awaitState(canary,"SUCCEEDED");
+        assertThat(vectorCount(id)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM knowledge_index_candidate c JOIN knowledge_index_attempt a ON a.id=c.attempt_id JOIN knowledge_index_batch b ON b.id=a.batch_id WHERE b.build_id=?",Integer.class,UUID.fromString(id))).isEqualTo(1);
+        assertThat(resume(a,id,false,UUID.randomUUID()).statusCode()).isEqualTo(200);awaitState(id,"SUCCEEDED");
+        assertThat(CALLS.get("[PAUSE_FAILURE]")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT attempt_count FROM knowledge_index_batch WHERE build_id=?",Integer.class,UUID.fromString(id))).isEqualTo(1);
+    }
+
+    @Test @Order(17) void committedAcceptanceWithLostAcknowledgmentKeepsOriginalResult() throws Exception {
+        Client a=new Client(maintainer);
+        for(boolean multi:List.of(false,true)) {
+            int losses=ACCEPT_ACK_LOSSES.get(),calls=CALLS.values().stream().mapToInt(Integer::intValue).sum();
+            String marker=multi?"[ACCEPT_ACK_MULTI]":"[ACCEPT_ACK]";
+            var v=approved(a,marker+" "+(multi?"😀".repeat(10_500):"source"));UUID operation=UUID.randomUUID();
+            ACCEPT_COMMIT_FAULT.set(true);
+            String id=(String)create(a,v,operation).get("buildId");
+            await(()->ACCEPT_ACK_LOSSES.get()==losses+1);awaitState(id,"SUCCEEDED");
+            assertThat(json(a.get(API+"/index-operations/"+operation))).containsEntry("buildId",id).containsEntry("state","SUCCEEDED");
+            assertThat(create(a,v,UUID.randomUUID()).get("buildId")).isEqualTo(id);
+            UUID attempt=jdbc.queryForList("SELECT current_attempt FROM knowledge_index_batch WHERE build_id=? ORDER BY ordinal",UUID.class,UUID.fromString(id)).getFirst();
+            assertThat(a.post(API+"/index-builds/"+id+"/resume",Map.of("attemptId",attempt,"acceptPossibleDuplicateCharge",false),UUID.randomUUID()).statusCode()).isEqualTo(409);
+            assertThat(vectorCount(id)).isEqualTo(multi?11:1);
+            assertThat(jdbc.queryForList("SELECT attempt_count FROM knowledge_index_batch WHERE build_id=? ORDER BY ordinal",Integer.class,UUID.fromString(id))).containsOnly(1).hasSize(multi?2:1);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM knowledge_index_candidate c JOIN knowledge_index_attempt a ON a.id=c.attempt_id JOIN knowledge_index_batch b ON b.id=a.batch_id WHERE b.build_id=? AND a.state='ACCEPTED'",Integer.class,UUID.fromString(id))).isEqualTo(multi?2:1);
+            assertThat(CALLS.values().stream().mapToInt(Integer::intValue).sum()-calls).isEqualTo(multi?2:1);
+            // 后续真实工作完成说明执行者已经走过未知提交后的核实，原构建不会被改回暂停。
+            String next=(String)create(a,approved(a,marker+"_NEXT source"),UUID.randomUUID()).get("buildId");awaitState(next,"SUCCEEDED");
+            assertThat(json(a.get(API+"/index-builds/"+id))).containsEntry("state","SUCCEEDED");
+        }
+    }
+
+    @Test @Order(18) void stalePauseAfterLostAcknowledgmentCannotUndoManualRecovery() throws Exception {
+        jdbc.execute("CREATE FUNCTION fail_pause_race() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic acceptance fault'; END $$");
+        jdbc.execute("CREATE TRIGGER fail_pause_race BEFORE INSERT ON knowledge_index_vector FOR EACH ROW EXECUTE FUNCTION fail_pause_race()");
+        pauseCommitted=new CountDownLatch(1);releasePauseAck=new CountDownLatch(1);PAUSE_COMMIT_FAULT.set(true);
+        Client a=new Client(maintainer);String id;
+        try {
+            id=(String)create(a,approved(a,"[PAUSE_RACE] source"),UUID.randomUUID()).get("buildId");
+            assertThat(pauseCommitted.await(15,TimeUnit.SECONDS)).isTrue();awaitState(id,"WAITING_MANUAL");
+        } finally {
+            jdbc.execute("DROP TRIGGER fail_pause_race ON knowledge_index_vector");jdbc.execute("DROP FUNCTION fail_pause_race()");
+        }
+        try {
+            assertThat(resume(a,id,false,UUID.randomUUID()).statusCode()).isEqualTo(200);
+        } finally { releasePauseAck.countDown();PAUSE_COMMIT_FAULT.set(false); }
+        awaitState(id,"SUCCEEDED");assertThat(CALLS.get("[PAUSE_RACE]")).isEqualTo(1);
+        assertThat(vectorCount(id)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT attempt_count FROM knowledge_index_batch WHERE build_id=?",Integer.class,UUID.fromString(id))).isEqualTo(1);
+    }
+
     static Process child() throws Exception {
         int port;try(var socket=new ServerSocket(0)){port=socket.getLocalPort();}base=URI.create("http://127.0.0.1:"+port);
         var pb=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin/java.exe").toString(),"-cp",System.getProperty("java.class.path"),WorkerProcess.class.getName(),Integer.toString(port),mockUrl,database);
@@ -298,11 +374,28 @@ class KnowledgeIndexIT {
         }
         static Connection wrap(Connection real) {
             var dispatch=new AtomicBoolean();
+            var acceptance=new AtomicBoolean();
+            var pausing=new AtomicBoolean();
             return (Connection)Proxy.newProxyInstance(Connection.class.getClassLoader(),new Class<?>[]{Connection.class},(proxy,method,args)->{
                 try {
-                    if(method.getName().equals("prepareStatement") && args!=null && args[0] instanceof String sql && sql.contains("INSERT INTO knowledge_index_attempt"))dispatch.set(true);
+                    if(method.getName().equals("prepareStatement") && args!=null && args[0] instanceof String sql) {
+                        if(sql.contains("INSERT INTO knowledge_index_attempt"))dispatch.set(true);
+                        if(sql.contains("INSERT INTO knowledge_index_vector"))acceptance.set(true);
+                        if(sql.contains("error_category='ACCEPTANCE_UNKNOWN'")) {
+                            pausing.set(true);
+                            if(PAUSE_UNAVAILABLE.get()) { PAUSE_FAILURES.incrementAndGet();throw new SQLException("Synthetic pause registration unavailable","08006"); }
+                        }
+                    }
                     Object result=method.invoke(real,args);
                     if(method.getName().equals("commit") && dispatch.get() && COMMIT_FAULT.compareAndSet(true,false))throw new SQLException("Synthetic lost COMMIT acknowledgment after real PG commit","08006");
+                    if(method.getName().equals("commit") && acceptance.get() && ACCEPT_COMMIT_FAULT.compareAndSet(true,false)) {
+                        ACCEPT_ACK_LOSSES.incrementAndGet();throw new SQLException("Synthetic lost acceptance acknowledgment after real PG commit","08006");
+                    }
+                    if(method.getName().equals("commit") && pausing.get() && PAUSE_COMMIT_FAULT.compareAndSet(true,false)) {
+                        pauseCommitted.countDown();
+                        if(!releasePauseAck.await(15,TimeUnit.SECONDS))throw new SQLException("Synthetic pause acknowledgment gate timed out","08006");
+                        throw new SQLException("Synthetic lost pause acknowledgment after real PG commit","08006");
+                    }
                     return result;
                 } catch(InvocationTargetException ex){throw ex.getCause();}
             });

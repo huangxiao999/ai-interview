@@ -219,8 +219,18 @@ class KnowledgeMaintenanceIT {
             var process=browser.start();
             try { assertThat(process.waitFor(120,TimeUnit.SECONDS)).isTrue(); assertThat(process.exitValue()).isZero(); }
             finally { if(process.isAlive()) process.destroyForcibly(); }
-            assertThat(jdbc.queryForObject("SELECT count(*) FROM knowledge_version WHERE submitted_by=?",Integer.class,browserAccount.id())).isEqualTo(2);
-            assertThat(jdbc.queryForObject("SELECT count(*) FROM knowledge_review WHERE reviewer_id=?",Integer.class,browserAccount.id())).isEqualTo(2);
+            var originalRoots=jdbc.queryForList("SELECT DISTINCT document_id FROM knowledge_version WHERE submitted_by=? AND title='Browser synthetic source'",UUID.class,browserAccount.id());
+            assertThat(originalRoots).hasSize(1);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM knowledge_version WHERE document_id=?",Integer.class,originalRoots.getFirst())).isEqualTo(2);
+            assertThat(jdbc.queryForList("SELECT r.decision FROM knowledge_review r JOIN knowledge_version v ON v.id=r.version_id WHERE v.document_id=? ORDER BY v.version_no",String.class,originalRoots.getFirst())).containsExactly("APPROVE","REJECT");
+            // 四个预检场景恢复后各保存一版，仅审核场景新增决定；原历史防重断言仍按原根保留。
+            for(String kind:List.of("SUBMIT","REVIEW")) for(String endpoint:List.of("me","csrf")) {
+                var versions=jdbc.queryForList("SELECT id FROM knowledge_version WHERE submitted_by=? AND title=?",UUID.class,browserAccount.id(),"Receipt "+kind+" "+endpoint);
+                assertThat(versions).hasSize(1);
+                assertThat(jdbc.queryForList("SELECT decision FROM knowledge_review WHERE version_id=?",String.class,versions.getFirst())).isEqualTo(kind.equals("REVIEW")?List.of("APPROVE"):List.of());
+            }
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM knowledge_version WHERE submitted_by=?",Integer.class,browserAccount.id())).isEqualTo(6);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM knowledge_review WHERE reviewer_id=?",Integer.class,browserAccount.id())).isEqualTo(4);
         } finally { vite.destroy(); if(!vite.waitFor(5,TimeUnit.SECONDS)) vite.destroyForcibly(); }
     }
 

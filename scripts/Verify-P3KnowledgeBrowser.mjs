@@ -71,28 +71,101 @@ try {
   await evaluate(`document.querySelector('a[href="/app/knowledge"]').click()`)
   await wait(`!!document.querySelector('#knowledge-title')`, 'knowledge page')
   const body = 'Synthetic <img src=x onerror="window.knowledgeInjected=true"> original'
-  for (const [selector, value] of [
-    ['#knowledge-title','Browser synthetic source'], ['#knowledge-body',body],
+  async function fillKnowledge(title, content) {
+    for (const [selector, value] of [
+    ['#knowledge-title',title], ['#knowledge-body',content],
     ['#knowledge-url','https://example.invalid/synthetic'], ['#knowledge-anchor','section 1'],
     ['#knowledge-applicability','Java 21 synthetic scope'], ['#knowledge-usage','Synthetic fixture'],
     ['#knowledge-verification','Workflow fixture only'], ['#knowledge-date','2026-10-31'],
-  ]) await fill(selector,value)
-  await evaluate(`(() => {
+    ]) await fill(selector,value)
+  }
+  async function selectVersion(version) {
+    await wait(`!!document.querySelector('[data-knowledge-version="${version}"]:not(:disabled)')`, 'fixed version available')
+    await evaluate(`document.querySelector('[data-knowledge-version="${version}"]').click()`)
+    await wait(`!!document.querySelector('#knowledge-review-reason')`, 'pending review selected')
+  }
+  async function preflightFailure(kind, endpoint, recovery) {
+    const title=`Receipt ${kind} ${endpoint}`
+    const content=`Synthetic unsent ${kind} ${endpoint}`
+    await send('Page.reload',{},sessionId)
+    await wait(`!!document.querySelector('#knowledge-title') && !document.querySelector('#knowledge-title').matches(':disabled')`, 'fresh maintenance page')
+    await fillKnowledge(title,content)
+    let version
+    if(kind==='REVIEW') {
+      await evaluate(`document.querySelector('form').requestSubmit()`)
+      await wait(`document.querySelector('#knowledge-original')?.textContent===${JSON.stringify(content)} && document.body.textContent.includes('服务端已确认保存')`, 'real pending version created')
+      version=await evaluate(`document.querySelector('section[aria-label="固定版本审核"] p').textContent.match(/[a-f0-9-]{36}/i)[0]`)
+      // 重新装载以清空模块内CSRF缓存，确保本例实际经过CSRF预检。
+      await send('Page.reload',{},sessionId)
+      await wait(`!!document.querySelector('#knowledge-title')`, 'pending fixture reload')
+      await selectVersion(version)
+      await fill('#knowledge-review-reason','Synthetic preflight review')
+    }
+    await evaluate(`(() => {
+      const f=window.fetch.bind(window);window.receiptNativeFetch=f;
+      window.receiptPreflights=0;window.receiptPosts=0;
+      window.fetch=async(input,init)=>{
+        const pathname=new URL(input instanceof Request?input.url:input,location.href).pathname;
+        if(pathname===${JSON.stringify('/api/auth/'+endpoint)}) {window.receiptPreflights++;throw new TypeError('synthetic preflight unavailable');}
+        if(pathname.startsWith('/api/maintenance/knowledge') && init?.method==='POST')window.receiptPosts++;
+        return f(input,init);
+      };
+    })()`)
+    if(kind==='SUBMIT') await evaluate(`document.querySelector('form').requestSubmit()`)
+    else await click('确认已核实并批准该版本')
+    await wait(`document.body.textContent.includes('尚未发送') && !document.querySelector('#knowledge-title').matches(':disabled')`, 'known unsent operation')
+    assert.equal(await evaluate(`window.receiptPreflights`),1)
+    assert.equal(await evaluate(`window.receiptPosts`),0)
+    assert.equal(await evaluate(`sessionStorage.getItem('knowledge-original-operation')`),null)
+    assert.equal(await evaluate(`Array.from(document.querySelectorAll('button')).some(e=>e.textContent.trim()==='核实原操作')`),false)
+    await evaluate(`window.fetch=window.receiptNativeFetch`)
+    if(recovery==='reload') await send('Page.reload',{},sessionId)
+    else await evaluate(`window.dispatchEvent(new Event('focus'))`)
+    await wait(`!!document.querySelector('#knowledge-title') && !Array.from(document.querySelectorAll('button')).find(e=>e.textContent.trim()==='新建知识资料').disabled`, 'recheck leaves maintenance usable')
+    assert.equal(await evaluate(`sessionStorage.getItem('knowledge-original-operation')`),null)
+    if(kind==='REVIEW') {
+      await selectVersion(version)
+      await fill('#knowledge-review-reason','Synthetic recovered review')
+      await click('确认已核实并批准该版本')
+      await wait(`document.querySelector('section[aria-label="固定版本审核"] h2')?.textContent.includes('APPROVED') && document.querySelector('#knowledge-original')?.textContent===${JSON.stringify(content)}`, 'review succeeds after preflight recovery')
+    } else {
+      await fillKnowledge(title,content)
+      await evaluate(`document.querySelector('form').requestSubmit()`)
+      await wait(`document.querySelector('#knowledge-original')?.textContent===${JSON.stringify(content)} && document.body.textContent.includes('服务端已确认保存')`, 'submission succeeds after preflight recovery')
+    }
+    process.stdout.write(`Preflight ${kind}/${endpoint} -> ${recovery}: 0 business POST, no receipt, real maintenance resumed.\n`)
+  }
+  async function installResponseLoss() {
+    await evaluate(`(() => {
     const nativeFetch=window.fetch.bind(window); window.knowledgeNativeFetch=nativeFetch;
     window.failKnowledgeBody=true; window.knowledgePosts=0;
     window.fetch=async (input,init)=>{
       const response=await nativeFetch(input,init);
       const pathname=new URL(input instanceof Request?input.url:input,location.href).pathname;
+      if(window.failKnowledgePreflight && pathname==='/api/auth/me')throw new TypeError('synthetic resend preflight unavailable');
       if(pathname.startsWith('/api/maintenance/knowledge') && init?.method==='POST') {
         window.knowledgePosts++;
         if(window.failKnowledgeBody) { window.failKnowledgeBody=false; response.json=async()=>{throw new TypeError('synthetic lost response')}; }
       }
       return response;
     };
-  })()`)
+    })()`)
+  }
+  await preflightFailure('SUBMIT','me','reload')
+  await preflightFailure('SUBMIT','csrf','focus')
+  await click('新建知识资料')
+  await fillKnowledge('Browser synthetic source',body)
+  await installResponseLoss()
   await evaluate(`document.querySelector('form').requestSubmit()`)
   await wait(`document.body.textContent.includes('结果未知')`, 'unknown submission')
   assert.equal(await evaluate(`document.querySelector('#knowledge-body').matches(':disabled')`), true)
+  const sentReceipt=await evaluate(`sessionStorage.getItem('knowledge-original-operation')`)
+  await evaluate(`window.failKnowledgePreflight=true`)
+  await click('重发同一固定请求')
+  await wait(`document.body.textContent.includes('结果未知') && !Array.from(document.querySelectorAll('button')).find(e=>e.textContent.trim()==='重发同一固定请求').disabled`, 'unknown resend preflight failed')
+  assert.equal(await evaluate(`sessionStorage.getItem('knowledge-original-operation')`),sentReceipt)
+  assert.equal(await evaluate(`window.knowledgePosts`),1)
+  await evaluate(`window.failKnowledgePreflight=false`)
   await evaluate(`window.dispatchEvent(new Event('focus'))`)
   await wait(`document.querySelector('#knowledge-title') && Array.from(document.querySelectorAll('button')).some(e=>e.textContent.trim()==='核实原操作' && !e.disabled)`, 'same-account identity recheck retains receipt')
   await click('核实原操作')
@@ -100,8 +173,12 @@ try {
   assert.equal(await evaluate(`window.knowledgePosts`),1)
   assert.equal(await evaluate(`document.querySelector('#knowledge-original').textContent`),body)
   assert.equal(await evaluate(`window.knowledgeInjected===true || !!document.querySelector('#knowledge-original img')`),false)
+  const originalVersion=await evaluate(`document.querySelector('section[aria-label="固定版本审核"] p').textContent.match(/[a-f0-9-]{36}/i)[0]`)
+  await preflightFailure('REVIEW','me','focus')
+  await preflightFailure('REVIEW','csrf','reload')
+  await selectVersion(originalVersion)
   await fill('#knowledge-review-reason','Synthetic reviewed source')
-  await evaluate(`window.failKnowledgeBody=true`)
+  await installResponseLoss()
   await click('确认已核实并批准该版本')
   await wait(`document.body.textContent.includes('结果未知')`, 'unknown review')
   await send('Page.reload', {}, sessionId)
@@ -115,7 +192,7 @@ try {
   await fill('#knowledge-review-reason','Synthetic rejected source')
   await click('拒绝该版本')
   await wait(`document.querySelector('section[aria-label="固定版本审核"] h2')?.textContent.includes('REJECTED') && !document.querySelector('#knowledge-body').matches(':disabled')`, 'rejected V2')
-  await evaluate(`Array.from(document.querySelectorAll('[data-knowledge-version]')).find(e=>e.textContent.includes('V1')).click()`)
+  await evaluate(`document.querySelector('[data-knowledge-version="${originalVersion}"]').click()`)
   await wait(`document.querySelector('#knowledge-original')?.textContent===${JSON.stringify(body)}`, 'immutable V1')
   // Capture only synthetic maintenance UI, never credentials or private user content.
   const screenshot=await send('Page.captureScreenshot',{ format:'png' },sessionId)

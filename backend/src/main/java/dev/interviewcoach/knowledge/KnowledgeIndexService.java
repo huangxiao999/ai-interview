@@ -26,6 +26,9 @@ public final class KnowledgeIndexService {
     private final ObjectMapper mapper;
     private final TransactionTemplate transaction;
     private final UUID executor=UUID.randomUUID();
+    // 单活动执行者至多保留一项待暂停身份；数据库故障不能把暂停降为自动重做接收。
+    private final java.util.concurrent.atomic.AtomicReference<AcceptancePause> pendingAcceptancePause =
+            new java.util.concurrent.atomic.AtomicReference<>();
 
     KnowledgeIndexService(KnowledgeIndexRepository repository, KnowledgeRepository knowledge, AccountWriteGuard accounts,
             EmbeddingGateway gateway,ObjectMapper mapper,PlatformTransactionManager manager) {
@@ -108,11 +111,13 @@ public final class KnowledgeIndexService {
 
     /** 单活动执行者调用；每次仅处理一个固定批次，所有网络I/O在事务外。 */
     public void workOnce() {
+        reconcileAcceptancePause();
         var selection=repository.findWork();
         if(selection.isEmpty()) return;
         var selected=selection.get();
         var original=repository.findBuild(selected.build()).orElseThrow();
         Dispatch dispatch;
+        var accepting=new java.util.concurrent.atomic.AtomicReference<AcceptancePause>();
         try {
         dispatch=transaction.execute(status->{
             var currentActor=accounts.lockCurrentAccount(original.owner());
@@ -120,7 +125,11 @@ public final class KnowledgeIndexService {
             var build=repository.findBuild(original.id()).orElseThrow();
             var batch=repository.findBatch(selected.id()).orElseThrow();
             if(!currentActor.hasAuthority(AccountAuthority.KNOWLEDGE_MAINTAINER) || !qualified(build)) { repository.invalidate(build,batch);return null; }
-            if(batch.state().equals("CANDIDATE_READY")) { accept(build,batch);return null; }
+            if(batch.state().equals("CANDIDATE_READY")) {
+                accepting.set(new AcceptancePause(build.id(),build.owner(),build.root(),batch.id(),batch.attempt(),
+                        batch.generation(),repository.resumeRequests(build.id())));
+                accept(build,batch);return null;
+            }
             if(batch.state().equals("RUNNING")) {
                 var attempt=repository.findAttempt(batch.attempt()).orElseThrow();
                 if(!attempt.executor().equals(executor) || !repository.now().isBefore(attempt.deadline())) repository.failed(build,batch,"EXTERNAL_UNKNOWN",true);
@@ -139,8 +148,11 @@ public final class KnowledgeIndexService {
             return new Dispatch(build,repository.findBatch(batch.id()).orElseThrow(),now.plusSeconds(KnowledgeIndexPolicy.SERVICE_SECONDS));
         });
         } catch(RuntimeException failure) {
-            try { repository.suspendAcceptance(original.id()); }
-            catch(RuntimeException unavailable) { failure.addSuppressed(unavailable); }
+            if(accepting.get()!=null) {
+                pendingAcceptancePause.set(accepting.get());
+                try { reconcileAcceptancePause(); }
+                catch(RuntimeException unavailable) { failure.addSuppressed(unavailable); }
+            }
             throw failure;
         }
         // execute返回即已成功提交；若提交抛错，本方法退出，绝不据内存的尝试意图派发。
@@ -169,6 +181,28 @@ public final class KnowledgeIndexService {
                         failure.category.equals("EXTERNAL_UNKNOWN") || failure.category.equals("DEADLINE"));
             });
         }
+    }
+
+    /** 未核实暂停之前只重试核实/登记，不接收候选或派发；已提交结果不能被改回暂停。 */
+    private void reconcileAcceptancePause() {
+        var pending=pendingAcceptancePause.get();
+        if(pending==null) return;
+        transaction.executeWithoutResult(status->{
+            var actor=accounts.lockCurrentAccount(pending.owner());
+            knowledge.lockRoot(pending.root());
+            var build=repository.findBuild(pending.build()).orElseThrow();
+            var batch=repository.findBatch(pending.batch()).orElseThrow();
+            // 人工恢复与本次核实共用根锁；其持久请求事实也覆盖恢复提交确认丢失。
+            if(build.state().equals("CANDIDATE_READY") && batch.state().equals("CANDIDATE_READY")
+                    && java.util.Objects.equals(batch.attempt(),pending.attempt())
+                    && batch.generation()==pending.generation()
+                    && repository.resumeRequests(build.id())==pending.resumes()) {
+                if(!actor.hasAuthority(AccountAuthority.KNOWLEDGE_MAINTAINER) || !qualified(build)) repository.invalidate(build,batch);
+                else repository.suspendAcceptance(build.id());
+            }
+        });
+        // COMMIT确认丢失时保留身份；下一轮查到已暂停、已接收或新人工恢复后才解除。
+        pendingAcceptancePause.compareAndSet(pending,null);
     }
 
     /** 每次启动只恢复一次原本已存但接收暂停的候选，无外部调用。 */
@@ -225,6 +259,7 @@ public final class KnowledgeIndexService {
         return new Detail(build.id(),build.root(),build.version(),build.state(),build.error(),build.digest(),build.configDigest(),build.policy(),List.copyOf(batches));
     }
     record Dispatch(KnowledgeIndexRepository.Build build,KnowledgeIndexRepository.Batch batch,OffsetDateTime deadline) { }
+    private record AcceptancePause(UUID build,UUID owner,UUID root,UUID batch,UUID attempt,long generation,long resumes) { }
     record Detail(UUID buildId,UUID documentId,UUID versionId,String state,String errorCategory,String versionDigest,String configDigest,String policy,List<BatchDetail> batches) { }
     record BatchDetail(UUID batchId,int ordinal,String state,int attempts,int remaining,long generation,UUID attemptId,String attemptState,OffsetDateTime deadline) { }
 }

@@ -72,7 +72,10 @@ export function listKnowledge(): Promise<KnowledgeVersion[]> {
     return payload.map(parseVersion)
   })
 }
-export async function submitKnowledge(op: KnowledgeOperation): Promise<KnowledgeVersion> {
+export async function submitKnowledge(
+  op: KnowledgeOperation,
+  beforeDispatch: () => void,
+): Promise<KnowledgeVersion> {
   const path =
     op.kind === 'SUBMIT'
       ? op.root
@@ -83,11 +86,14 @@ export async function submitKnowledge(op: KnowledgeOperation): Promise<Knowledge
     op.kind === 'SUBMIT'
       ? op.input
       : { digest: op.digest, decision: op.decision, reason: op.reason }
+  const headers = await csrfHeader()
+  // 预检尚未完成不能登记未知回执；调用方在真正发送业务POST之前固定恢复身份。
+  beforeDispatch()
   const response = await request(base + path, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(await csrfHeader()),
+      ...headers,
       'X-Expected-Account-Id': op.accountId,
       'X-Operation-Id': op.id,
     },

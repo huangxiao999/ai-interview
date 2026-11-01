@@ -26,10 +26,18 @@ try {
     $logPath=Join-Path $projectRoot ".cache/$testDatabase.log"
     $sources=@(Get-ChildItem 'backend/src/main/java/dev/interviewcoach/knowledge' -Filter '*.java' | ForEach-Object { [IO.Path]::GetRelativePath($projectRoot,$_.FullName) })
     $sources+=@('backend/src/main/resources/db/migration/V7__create_reviewed_knowledge.sql','backend/src/test/java/dev/interviewcoach/identity/KnowledgeMaintenanceIT.java','scripts/Verify-P3Knowledge.ps1','scripts/Verify-P3KnowledgeBrowser.mjs','backend/src/main/java/dev/interviewcoach/identity/LocalSecurityConfiguration.java','frontend/src/api/knowledge.ts','frontend/src/stores/knowledge.ts','frontend/src/views/KnowledgePage.vue','frontend/src/router/index.ts','frontend/src/views/WorkspacePage.vue')
+    $sources+=@('backend/src/main/resources/db/migration/V8__create_knowledge_index_builds.sql','frontend/src/api/auth.ts','frontend/src/api/http.ts','frontend/src/stores/session.ts')
     $hashes=@{}; foreach ($source in $sources) { $hashes[$source]=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash }
     $manifest=@{ database=$testDatabase; createdAt=[DateTimeOffset]::Now.ToString('o'); status='running'; sourceSha256=$hashes; log=$logPath }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
     Write-Output "New isolated PG16 verification database: $testDatabase (retained)"
+    # 与索引验证保持相同的真实javac边界，保留编辑器/Maven旧编译状态，避免class时间戳误判。
+    $compilerState=[IO.Path]::GetFullPath((Join-Path $projectRoot 'backend/target/maven-status'))
+    $savedCompilerState=[IO.Path]::GetFullPath((Join-Path $projectRoot ".cache/$testDatabase-compiler-status"))
+    foreach ($target in @($compilerState,$savedCompilerState)) {
+        if (-not $target.StartsWith($projectRoot+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) { throw 'Compiler state path escaped workspace' }
+    }
+    if (Test-Path -LiteralPath $compilerState) { Move-Item -LiteralPath $compilerState -Destination $savedCompilerState }
     Set-Location backend
     $started=[DateTime]::UtcNow
     ./mvnw.cmd '-Dmaven.repo.local=../.cache/maven-repository' -B -ntp -Pdatabase-verification '-Dit.test=KnowledgeMaintenanceIT' verify *> $logPath

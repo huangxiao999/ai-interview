@@ -108,6 +108,9 @@ class KnowledgeIndexRepository {
         else jdbc.update("UPDATE knowledge_index_batch SET queued_at=clock_timestamp() WHERE id=(SELECT id FROM knowledge_index_batch WHERE build_id=? AND state='QUEUED' ORDER BY ordinal LIMIT 1)",b.id());
     }
     void suspendAcceptance(UUID build) { jdbc.update("UPDATE knowledge_index_build SET state='WAITING_MANUAL',error_category='ACCEPTANCE_UNKNOWN' WHERE id=? AND state='CANDIDATE_READY'",build); }
+    long resumeRequests(UUID build) {
+        return jdbc.queryForObject("SELECT count(*) FROM knowledge_index_request WHERE build_id=? AND kind='RESUME'",Long.class,build);
+    }
     List<UUID> recoveryCandidates() {
         return jdbc.queryForList("SELECT id FROM knowledge_index_build WHERE state='WAITING_MANUAL' AND error_category='ACCEPTANCE_UNKNOWN'",UUID.class);
     }

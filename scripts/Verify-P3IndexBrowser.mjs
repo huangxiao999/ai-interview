@@ -111,7 +111,15 @@ try {
   await send('Page.reload',{},sessionId)
   await wait(`Array.from(document.querySelectorAll('button')).some(e=>e.textContent.trim()==='核实原索引操作')`, 'minimal receipt after refresh')
   await click('核实原索引操作')
-  await wait(`document.body.textContent.includes('WAITING_MANUAL')`, 'external unknown waiting')
+  // 批次文字可能先变成WAITING_MANUAL；只有原构建查询完成并渲染人工入口才能操作。
+  await wait(`!!document.querySelector('h2') && !Array.from(document.querySelectorAll('button')).find(e=>e.textContent.trim()==='核实原构建状态').disabled`, 'original build query completed')
+  for (let i=0;i<50;i++) {
+    if(await evaluate(`!!document.querySelector('#index-cost-ack')`)) break
+    await click('核实原构建状态')
+    await wait(`!Array.from(document.querySelectorAll('button')).find(e=>e.textContent.trim()==='核实原构建状态').disabled`, 'waiting state query completed')
+    await delay(200)
+  }
+  await wait(`document.querySelector('h2')?.textContent.includes('WAITING_MANUAL') && !!document.querySelector('#index-cost-ack')`, 'external unknown manual controls')
   assert.equal(await evaluate(`document.querySelector('#index-cost-ack').checked`),false)
   await click('恢复原批次')
   await wait(`document.body.textContent.includes('请明确确认重复费用风险')`, 'acknowledgment required')

@@ -29,8 +29,8 @@ final class KnowledgeIndexWorker {
                 if(!recovered) { service.recoverAcceptance();recovered=true; }
                 service.workOnce();
             } catch(RuntimeException failure) {
-                // DB提交未知时不能重新外调；候选仍在则暂停接收，其他在途在期限/重启核实。
-                LOG.warn("Knowledge index worker paused: {}",failure.getClass().getSimpleName());
+                // 服务保留待暂停身份；后续tick只核实暂停，不能因释放线程许可就自动接收。
+                LOG.warn("Knowledge index worker step failed: {}",failure.getClass().getSimpleName());
             } finally { busy.set(false); }
         });
     }

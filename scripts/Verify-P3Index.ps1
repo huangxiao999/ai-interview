@@ -52,7 +52,7 @@ try {
             Where-Object { $_.LastWriteTimeUtc -ge $started } | Copy-Item -Destination $destination
     }
     if (-not (Test-Path -LiteralPath $report) -or (Get-Item -LiteralPath $report).LastWriteTimeUtc -lt $started) { $result=1 }
-    else { $xmlReport=[xml](Get-Content -LiteralPath $report -Raw); if ([int]$xmlReport.testsuite.skipped -ne 0 -or [int]$xmlReport.testsuite.tests -lt 15) { $result=1 } }
+    else { $xmlReport=[xml](Get-Content -LiteralPath $report -Raw); if ([int]$xmlReport.testsuite.skipped -ne 0 -or [int]$xmlReport.testsuite.tests -lt 18) { $result=1 } }
     foreach ($source in $sources) {
         if ((Get-FileHash -LiteralPath (Join-Path $projectRoot $source) -Algorithm SHA256).Hash -ne $hashes[$source]) { $result=1; $manifest['sourceChangedDuringRun']=$true }
     }

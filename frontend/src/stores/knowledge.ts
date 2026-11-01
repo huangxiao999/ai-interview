@@ -149,7 +149,6 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       root: root.value,
       input: { ...draft.value },
     }
-    saveReceipt(pending.value)
     return sendOriginal()
   }
   function beginReview(decision: 'APPROVE' | 'REJECT'): Promise<void> {
@@ -166,13 +165,14 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       decision,
       reason: reason.value,
     }
-    saveReceipt(pending.value)
     return sendOriginal()
   }
   async function sendOriginal(): Promise<void> {
     const op = pending.value
     if (!op || busy.value) return
     const epoch = generation
+    const hadReceipt = receipt.value?.id === op.id
+    let dispatched = false
     busy.value = true
     message.value = '正在提交，请等待服务端确认'
     try {
@@ -183,7 +183,12 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
         await session.refreshIdentity()
         return
       }
-      const result = await submitKnowledge(op)
+      const result = await submitKnowledge(op, () => {
+        if (epoch !== generation || pending.value?.id !== op.id)
+          throw new ApiError(409, 'ACCOUNT_CHANGED', '身份核实已更新')
+        dispatched = true
+        saveReceipt(op)
+      })
       if (epoch !== generation || pending.value?.id !== op.id) return
       pending.value = null
       clearReceipt()
@@ -193,12 +198,18 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       await refresh()
     } catch (error: unknown) {
       if (epoch !== generation) return
-      if (error instanceof ApiError && error.status !== null && error.status < 500) {
+      const rejected = error instanceof ApiError && error.status !== null && error.status < 500
+      if ((!dispatched && !hadReceipt) || (dispatched && rejected)) {
         pending.value = null
         clearReceipt()
-        message.value = error.message
-        if (error.status === 401 || error.status === 403) await session.refreshIdentity()
+        message.value =
+          dispatched && error instanceof Error
+            ? error.message
+            : '提交前核实未完成，本次尚未发送，可重试'
       } else message.value = '结果未知：请核实原操作；不能创建另一份请求猜测结果'
+      // 重发旧未知操作时的预检失败，不能抹掉此前真实发送留下的回执。
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403))
+        await session.refreshIdentity()
     } finally {
       if (epoch === generation) busy.value = false
     }
