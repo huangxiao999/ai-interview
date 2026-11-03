@@ -37,6 +37,12 @@ class KnowledgeCollectionRepository {
                 r.getString("body"),r.getString("digest"),null);
     }
     Optional<Collection> find(UUID id) { return jdbc.query("SELECT * FROM knowledge_collection WHERE id=?",COLLECTION,id).stream().findFirst(); }
+    List<PlanEvidenceFacts.Option> planOptions(UUID collection,String digest){
+        return jdbc.query("SELECT DISTINCT e.technology,e.technology_version,e.scenario,e.claim_key FROM knowledge_collection_entry e "
+                +"JOIN knowledge_review r ON r.version_id=e.version_id AND r.decision='APPROVE' WHERE e.collection_id=? "
+                +"AND NOT EXISTS(SELECT 1 FROM knowledge_version_stop s WHERE s.version_id=e.version_id) ORDER BY e.technology,e.technology_version,e.scenario,e.claim_key",
+                (r,n)->new PlanEvidenceFacts.Option(collection,digest,r.getString(1),r.getString(2),r.getString(3),r.getString(4)),collection);
+    }
     Optional<UUID> findCurrent() {
         return Optional.ofNullable(jdbc.queryForObject("SELECT collection_id FROM knowledge_collection_current WHERE singleton=1",UUID.class));
     }

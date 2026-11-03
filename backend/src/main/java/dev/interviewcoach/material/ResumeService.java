@@ -18,12 +18,14 @@ final class ResumeService {
     private final ResumeRepository repository;
     private final AccountWriteGuard accountWriteGuard;
     private final TransactionTemplate transaction;
+    private final List<MaterialDeletionParticipant> deletionParticipants;
 
     ResumeService(ResumeRepository repository, AccountWriteGuard accountWriteGuard,
-            PlatformTransactionManager manager) {
+            PlatformTransactionManager manager, List<MaterialDeletionParticipant> deletionParticipants) {
         this.repository = repository;
         this.accountWriteGuard = accountWriteGuard;
         this.transaction = new TransactionTemplate(manager);
+        this.deletionParticipants = List.copyOf(deletionParticipants);
     }
 
     ResumeRepository.Detail create(Actor actor, UUID expectedAccountId, UUID operationId, String rawBody) {
@@ -127,12 +129,15 @@ final class ResumeService {
         requireTrial(actor);
         return transaction.execute(status -> {
             requireActiveRoot(actor, resumeId);
+            var additional=deletionParticipants.stream().map(p->p.impact(actor.accountId(),resumeId)).toList();
             return new DeletionImpact(repository.countVersions(resumeId), repository.countJdVersions(resumeId),
-                    repository.countFiles(resumeId));
+                    repository.countFiles(resumeId), additional.stream().mapToInt(MaterialDeletionParticipant.Impact::plans).sum(),
+                    additional.stream().mapToInt(MaterialDeletionParticipant.Impact::operations).sum(),
+                    additional.stream().mapToInt(MaterialDeletionParticipant.Impact::candidates).sum());
         });
     }
 
-    record DeletionImpact(int versionCount, int jdVersionCount, int fileCount) {
+    record DeletionImpact(int versionCount, int jdVersionCount, int fileCount, int planCount, int planOperationCount, int planCandidateCount) {
     }
 
     ResumeRepository.Deletion delete(Actor actor, UUID expectedAccountId, UUID resumeId) {
@@ -150,6 +155,9 @@ final class ResumeService {
             UUID requestId = UUID.randomUUID();
             var now = repository.databaseTime();
             repository.recordDeletion(requestId, resumeId, now, repository.versionIds(resumeId));
+            // 同事务扩展实际范围；参与者必须先登记PENDING，随后统一核全部清理项，不能只看文件。
+            for(var participant:deletionParticipants) participant.invalidateAndRegister(actor.accountId(),resumeId,requestId);
+            repository.refreshDeletionState(requestId);
             return repository.deletion(actor.accountId(), resumeId)
                     .orElseThrow(IllegalStateException::new);
         });

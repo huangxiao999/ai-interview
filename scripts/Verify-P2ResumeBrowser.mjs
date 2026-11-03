@@ -12,6 +12,8 @@ const username = process.env.P2_BROWSER_USER
 const password = process.env.P2_BROWSER_PASSWORD
 const otherUser = process.env.P2_BROWSER_OTHER_USER
 const otherPassword = process.env.P2_BROWSER_OTHER_PASSWORD
+const evidenceId = process.env.P2_DT01_TEST_DATABASE
+assert.match(evidenceId ?? '', /^p2dt01_verify_[a-f0-9]{16}$/, 'A unique isolated evidence identity is required')
 assert.ok(base && username && password && otherUser && otherPassword, 'Browser verification inputs are required')
 assert.ok(fs.existsSync(chrome), 'Real Chrome is required')
 
@@ -402,7 +404,8 @@ try {
   await waitUntil(`document.querySelectorAll('.material-list li').length === ${beforeQueryRecovery.items}
     && !document.querySelector('.material-list li:first-child button').disabled`, 'query-only recovery cleanup')
   await evaluate(`document.querySelector('.material-list li:first-child button').click()`)
-  await waitUntil(`!!document.querySelector('#jd-body') && !document.querySelector('#jd-body').disabled`, 'A version panel after resolving both creates')
+  await waitUntil(`!!document.querySelector('#jd-body') && !document.querySelector('#jd-body').disabled
+    && document.querySelectorAll('[data-resume-version]').length === 1`, 'A version panel after resolving both creates')
   assert.equal(await evaluate(`document.querySelectorAll('[data-resume-version]').length`), 1)
   assert.equal(await evaluate(`document.querySelectorAll('[data-jd-version]').length`), 0)
   const jdFirst = 'Java后端目标岗位' + 'J'.repeat(70)
@@ -780,7 +783,7 @@ try {
   await waitUntil(`!document.body.innerText.includes('版本列表加载失败') && !!document.querySelector('[data-resume-version]')`, 'version list recovery')
   await waitUntil(`!document.body.innerText.includes('网络异常，暂时无法核实请求结果')`, 'recovered reads clear stale failure messages')
   const historyShot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }, sessionId)
-  fs.writeFileSync(path.resolve('../.cache/p2dt04-history.png'), Buffer.from(historyShot.data, 'base64'))
+  fs.writeFileSync(path.resolve(`../.cache/${evidenceId}-history.png`), Buffer.from(historyShot.data, 'base64'))
 
   // 固定地址进入后新增/切根，焦点身份核实不能恢复旧地址的目标。
   const navigationRoots = await evaluate(`(async () => (await (await fetch('/api/materials/resumes')).json()).slice(0, 2).map(r => r.resumeId))()`)
@@ -1016,7 +1019,7 @@ try {
   assert.equal(await evaluate(`!!document.querySelector('[data-cleanup-state="PENDING"]')`), true)
   await evaluate(`window.fetch = window.cleanupFetch`)
   const pendingShot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }, sessionId)
-  fs.writeFileSync(path.resolve('../.cache/p2dt04-cleanup-pending.png'), Buffer.from(pendingShot.data, 'base64'))
+  fs.writeFileSync(path.resolve(`../.cache/${evidenceId}-cleanup-pending.png`), Buffer.from(pendingShot.data, 'base64'))
   fs.unlinkSync(path.join(blocking, 'sentinel'))
   try { fs.rmdirSync(blocking) } catch (error) { if (error.code !== 'ENOENT') throw error }
   // 已确认文件仍保留解析截止＋5秒退出保护；观察窗口覆盖完整35秒，不改业务期限。

@@ -72,8 +72,8 @@ class KnowledgeIndexIT {
         jdbc=new JdbcTemplate(new DriverManagerDataSource(System.getenv("DB_URL")+"?currentSchema=app",System.getenv("DB_USERNAME"),System.getenv("DB_PASSWORD")));
         var history=jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' ORDER BY installed_rank");
         var current=Flyway.configure().dataSource(System.getenv("DB_URL"),System.getenv("DB_USERNAME"),System.getenv("DB_PASSWORD")).schemas("app").defaultSchema("app").load();
-        assertThat(current.migrate().migrationsExecuted).isEqualTo(2);assertThat(current.migrate().migrationsExecuted).isZero();current.validate();
-        assertThat(jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' AND version NOT IN ('8','9') ORDER BY installed_rank")).isEqualTo(history);
+        assertThat(current.migrate().migrationsExecuted).isEqualTo(5);assertThat(current.migrate().migrationsExecuted).isZero();current.validate();
+        assertThat(jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' AND version NOT IN ('8','9','10','11','12') ORDER BY installed_rank")).isEqualTo(history);
         supplier=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         supplierThreads=Executors.newFixedThreadPool(4);supplier.setExecutor(supplierThreads);
         supplier.createContext("/embedding",exchange->{
@@ -115,7 +115,7 @@ class KnowledgeIndexIT {
         startApplication(mockUrl,false);
     }
     static void startApplication(String endpoint,boolean tls) {
-        var arguments=new ArrayList<>(List.of("--server.port=0","--BAILIAN_EMBEDDING_ENABLED=false","--index-test.endpoint="+endpoint,
+        var arguments=new ArrayList<>(List.of("--server.port=0","--spring.config.import=","--BAILIAN_EMBEDDING_ENABLED=false","--index-test.endpoint="+endpoint,
                 "--material.private-root="+Path.of("../.cache",database,"private").toAbsolutePath()));
         if(tls)arguments.add("--index-test.tls-store="+http2.store);
         context=new SpringApplicationBuilder(InterviewCoachApplication.class,ExternalFixture.class).profiles("local")
@@ -225,7 +225,7 @@ class KnowledgeIndexIT {
     }
     @Test @Order(9) void unconfiguredProductionGatewayRefusesBeforeDispatch() throws Exception {
         context.close();context=null;
-        try(var unconfigured=new SpringApplicationBuilder(InterviewCoachApplication.class).profiles("local").run("--server.port=0","--BAILIAN_EMBEDDING_ENABLED=false","--material.private-root="+Path.of("../.cache",database,"private"))) {
+        try(var unconfigured=new SpringApplicationBuilder(InterviewCoachApplication.class).profiles("local").run("--server.port=0","--spring.config.import=","--BAILIAN_EMBEDDING_ENABLED=false","--material.private-root="+Path.of("../.cache",database,"private"))) {
             base=URI.create("http://127.0.0.1:"+unconfigured.getEnvironment().getRequiredProperty("local.server.port"));
             Client a=new Client(maintainer);var v=approved(a,"[UNCONFIGURED] source");
             assertThat(json(a.post(path(v),Map.of("digest",v.get("digest")),UUID.randomUUID())).get("code")).isEqualTo("INDEX_SERVICE_UNAVAILABLE");
@@ -544,7 +544,7 @@ class KnowledgeIndexIT {
         catch(Exception|Error ex){process.destroyForcibly();process.waitFor(10,TimeUnit.SECONDS);throw ex;}
     }
     public static class WorkerProcess {
-        public static void main(String[] args) { new SpringApplicationBuilder(InterviewCoachApplication.class,ExternalFixture.class).profiles("local").run("--server.port="+args[0],"--BAILIAN_EMBEDDING_ENABLED=false","--index-test.endpoint="+args[1],"--material.private-root="+Path.of("../.cache",args[2],"private")); }
+        public static void main(String[] args) { new SpringApplicationBuilder(InterviewCoachApplication.class,ExternalFixture.class).profiles("local").run("--server.port="+args[0],"--spring.config.import=","--BAILIAN_EMBEDDING_ENABLED=false","--index-test.endpoint="+args[1],"--material.private-root="+Path.of("../.cache",args[2],"private")); }
     }
     @TestConfiguration(proxyBeanMethods=false)
     public static class ExternalFixture {

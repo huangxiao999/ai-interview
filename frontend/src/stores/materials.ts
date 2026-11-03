@@ -49,6 +49,9 @@ export const useMaterialsStore = defineStore('materials', () => {
   const deleteVersionCount = ref(0)
   const deleteJdVersionCount = ref(0)
   const deleteFileCount = ref(0)
+  const deletePlanCount = ref(0)
+  const deletePlanOperationCount = ref(0)
+  const deletePlanCandidateCount = ref(0)
   const versionResumeId = ref<string | null>(null)
   const resumeVersions = ref<ResumeSummary[]>([])
   const jdVersions = ref<ResumeSummary[]>([])
@@ -310,6 +313,9 @@ export const useMaterialsStore = defineStore('materials', () => {
     deleteVersionCount,
     deleteJdVersionCount,
     deleteFileCount,
+    deletePlanCount,
+    deletePlanOperationCount,
+    deletePlanCandidateCount,
     versionResumeId,
     resumeVersions,
     jdVersions,

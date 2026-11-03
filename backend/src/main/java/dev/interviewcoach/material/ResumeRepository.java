@@ -175,6 +175,7 @@ class ResumeRepository {
         jdbc.update("DELETE FROM material_resume_version WHERE resume_id = ?", resumeId);
         jdbc.update("UPDATE material_resume SET state = 'DELETED', generation = generation + 1, "
                 + "deleted_at = ? WHERE id = ? AND state = 'ACTIVE'", now, resumeId);
+        jdbc.update("UPDATE material_plan_review SET confirmation=NULL, findings=NULL, finding_digest=NULL WHERE resume_id=?",resumeId);
         // 文件清理意图与根屏障共同提交；文件 I/O 在提交后由后台执行。
         for (UUID uploadId : jdbc.queryForList("SELECT id FROM material_upload WHERE resume_id=? "
                 + "AND state <> 'CLEANED'", UUID.class, resumeId)) {
@@ -186,6 +187,11 @@ class ResumeRepository {
         jdbc.update("UPDATE material_delete_request SET state='PENDING',cleaned_at=NULL WHERE id=? "
                 + "AND EXISTS (SELECT 1 FROM material_cleanup_item WHERE delete_request_id=? AND state='PENDING')",
                 requestId, requestId);
+    }
+
+    void refreshDeletionState(UUID request) {
+        jdbc.update("UPDATE material_delete_request SET state='PENDING',cleaned_at=NULL WHERE id=? "
+                +"AND EXISTS(SELECT 1 FROM material_cleanup_item WHERE delete_request_id=? AND state='PENDING')",request,request);
     }
 
     Optional<Deletion> deletion(UUID ownerId, UUID resumeId) {

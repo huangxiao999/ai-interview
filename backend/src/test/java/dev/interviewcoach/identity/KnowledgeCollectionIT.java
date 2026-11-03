@@ -52,8 +52,8 @@ class KnowledgeCollectionIT {
         assertThat(flyway("8").migrate().migrationsExecuted).isEqualTo(8);
         jdbc=new JdbcTemplate(new DriverManagerDataSource(System.getenv("DB_URL")+"?currentSchema=app",System.getenv("DB_USERNAME"),System.getenv("DB_PASSWORD")));
         var history=jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' ORDER BY installed_rank");
-        var current=flyway(null);assertThat(current.migrate().migrationsExecuted).isEqualTo(1);current.validate();assertThat(current.migrate().migrationsExecuted).isZero();
-        assertThat(jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' AND version<>'9' ORDER BY installed_rank")).isEqualTo(history);
+        var current=flyway(null);assertThat(current.migrate().migrationsExecuted).isEqualTo(4);current.validate();assertThat(current.migrate().migrationsExecuted).isZero();
+        assertThat(jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' AND version NOT IN ('9','10','11','12') ORDER BY installed_rank")).isEqualTo(history);
         maintainer=account(AccountAuthority.KNOWLEDGE_MAINTAINER);other=account(AccountAuthority.KNOWLEDGE_MAINTAINER);user=account(AccountAuthority.TRIAL_USER);
         startApplication();
     }
@@ -62,7 +62,7 @@ class KnowledgeCollectionIT {
     }
     static DataSource raw() { return new DriverManagerDataSource(System.getenv("DB_URL"),System.getenv("DB_USERNAME"),System.getenv("DB_PASSWORD")); }
     static void startApplication() {
-        context=new SpringApplicationBuilder(InterviewCoachApplication.class,FixtureConfig.class).profiles("local").run("--server.port=0","--BAILIAN_EMBEDDING_ENABLED=false",
+        context=new SpringApplicationBuilder(InterviewCoachApplication.class,FixtureConfig.class).profiles("local").run("--server.port=0","--spring.config.import=","--BAILIAN_EMBEDDING_ENABLED=false",
                 "--material.private-root="+Path.of("../.cache",database,"private").toAbsolutePath());
         base=URI.create("http://127.0.0.1:"+context.getEnvironment().getRequiredProperty("local.server.port"));
     }

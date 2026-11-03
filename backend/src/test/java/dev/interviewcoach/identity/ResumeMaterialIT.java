@@ -72,7 +72,7 @@ class ResumeMaterialIT {
                 + "VALUES(?,?,1,?,?,100)", legacyVersion, legacyRoot, UUID.randomUUID(), "L".repeat(100));
         flyway = Flyway.configure().dataSource(url, username, password).defaultSchema("app")
                 .schemas("app").locations("classpath:db/migration").load();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(5);
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(9);
         assertThat(flyway.migrate().migrationsExecuted).isZero();
         flyway.validate();
         assertThat(jdbc.queryForObject("SELECT body FROM material_resume_version WHERE id = ?",
@@ -84,7 +84,7 @@ class ResumeMaterialIT {
         maintainer = insertAccount(Set.of(AccountAuthority.KNOWLEDGE_MAINTAINER));
         context = new SpringApplicationBuilder(InterviewCoachApplication.class)
                 .sources(UploadCommitFaults.class)
-                .profiles("local").run("--server.port=0", "--material.private-root=" + privateRoot());
+                .profiles("local").run("--server.port=0", "--spring.config.import=", "--BAILIAN_EMBEDDING_ENABLED=false", "--material.private-root=" + privateRoot());
         base = URI.create("http://127.0.0.1:"
                 + context.getEnvironment().getRequiredProperty("local.server.port"));
         assertThat(context.getBean(jakarta.servlet.MultipartConfigElement.class).getFileSizeThreshold()).isEqualTo(10_000_000);
@@ -520,7 +520,7 @@ class ResumeMaterialIT {
         command.directory(Path.of("../frontend").toFile());
         command.environment().put("BACKEND_URL", base.toString());
         command.redirectErrorStream(true);
-        command.redirectOutput(Path.of("../.cache/p2-dt01-vite.log").toFile());
+        command.redirectOutput(Path.of("../.cache", System.getenv("P2_DT01_TEST_DATABASE") + "-vite.log").toFile());
         vite = command.start();
         boolean ready = false;
         for (int attempt = 0; attempt < 100; attempt++) {
