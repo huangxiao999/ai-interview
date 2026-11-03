@@ -201,7 +201,7 @@ public final class PlanService implements MaterialDeletionParticipant {
     synchronized boolean reconcile(){
         for(var p:List.copyOf(pending.values())){
             transaction.executeWithoutResult(status->{var c=context(p.work(),true);var w=c.work();
-                if(c.valid() && !"SUCCEEDED".equals(w.state()) && w.resumeSeq()==p.resumeSeq()){
+                if(c.valid() && !List.of("SUCCEEDED","FAILED_FINAL","INVALIDATED").contains(w.state()) && w.resumeSeq()==p.resumeSeq()){
                     if("DISPATCH".equals(p.stage()))data.write("UPDATE plan_external_attempt SET state='FAILED' WHERE workspace_id=? AND state='DISPATCH_INTENT'",w.id());
                     // 外调未知的落库失败不允许降级为普通本地暂停，否则会绕过逐次费用确认。
                     if("EXTERNAL_UNKNOWN".equals(p.stage())){
@@ -269,8 +269,13 @@ public final class PlanService implements MaterialDeletionParticipant {
             finally{release(reserved);}
             try{saveCandidate(dispatch,response);}catch(RuntimeException failure){pause(dispatch.work(),"CANDIDATE");throw failure;}
         }catch(MaterialPlanFacts.Rejected | PlanEvidenceFacts.Rejected invalid){
-            transaction.executeWithoutResult(status->{accounts.lockCurrentAccount(original.owner());materials.lockRoot(original.owner(),original.root(),true);data.lock(id);
-                var row=data.find(id).orElseThrow();if(!List.of("SUCCEEDED","INVALIDATED").contains(row.state()))state(row,"BLOCKED_KNOWLEDGE",invalid.getMessage());});
+            try{transaction.executeWithoutResult(status->{accounts.lockCurrentAccount(original.owner());materials.lockRoot(original.owner(),original.root(),true);data.lock(id);
+                var row=data.find(id).orElseThrow();if(!List.of("SUCCEEDED","FAILED_FINAL","INVALIDATED").contains(row.state()))state(row,"BLOCKED_KNOWLEDGE",invalid.getMessage());});}
+            catch(RuntimeException unknown){pause(original,"PREPARATION");throw unknown;}
+        }catch(RuntimeException unknown){
+            // 覆盖领取/证据准备和派发前本地失败；已登记的更具体阶段由putIfAbsent保留。
+            // 数据库恢复后先核实原query/evidence，不能留在PREPARING_EVIDENCE等待重启。
+            pause(original,"PREPARATION");throw unknown;
         }finally{release(reserved);}
     }
     private void release(AtomicBoolean reserved){if(reserved.getAndSet(false))permits.release();}
