@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute, onBeforeRouteLeave } from 'vue-router'
+import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import { useSessionStore } from '../stores/session'
 import { usePlansStore } from '../stores/plans'
 import { listVersions, type ResumeSummary } from '../api/materials'
 import { planPreparation, type PlanOption } from '../api/plans'
 
 const route = useRoute()
+const router = useRouter()
 const session = useSessionStore()
 const plans = usePlansStore()
 const resumeId = ref(typeof route.query.resumeId === 'string' ? route.query.resumeId : '')
@@ -102,6 +103,20 @@ async function start(): Promise<void> {
     restrictedCoverageConfirmed: true,
     newPlanIntent: true,
   })
+}
+async function prepareNew(): Promise<void> {
+  const root = plans.view?.resumeId
+  if (!root || !plans.canNewPlan) return
+  plans.newPlan()
+  confirmed.value = false
+  acceptCost.value = false
+  inputConfirmed.value = false
+  resumeId.value = root
+  resumeVersion.value = ''
+  jdVersion.value = ''
+  // 去掉旧操作和旧版本地址，再重新读当前本人版本；这一步只准备，不自动生成。
+  await router.replace({ name: 'plan', query: { resumeId: root } })
+  await load()
 }
 watch(
   () => [session.status, session.identity?.accountId] as const,
@@ -324,12 +339,8 @@ onBeforeRouteLeave(() => {
           </ul>
           <p>当前为工程验证结果，尚未开放真实面试、调整和确认功能。</p>
         </section>
-        <button
-          v-if="['SUCCEEDED', 'FAILED_FINAL'].includes(plans.view.state)"
-          type="button"
-          @click="plans.newPlan"
-        >
-          准备另一份计划
+        <button v-if="plans.canNewPlan" id="plan-new" type="button" @click="prepareNew">
+          {{ plans.view.state === 'INVALIDATED' ? '按更新资料准备新计划' : '准备另一份计划' }}
         </button>
       </section>
     </template>

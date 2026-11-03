@@ -310,8 +310,10 @@ public final class PlanService implements MaterialDeletionParticipant {
             materials.lockRoot(d.work().owner(),d.work().root(),true);data.lock(d.work().id());receipt(d.attempt(),receipt);});
     }
     private void saveQuery(Dispatch d,PlanTransport.Reply response){
+        try{
+        // 回执登记也是原query的本地接收步骤；失败或提交未知必须进入同一暂停保护。
         auditReceipt(d,response.receipt());
-        try{transaction.executeWithoutResult(status->{data.limitLockWait(d.deadline());var c=context(d.work(),true);receipt(d.attempt(),response.receipt());var w=c.work();
+        transaction.executeWithoutResult(status->{data.limitLockWait(d.deadline());var c=context(d.work(),true);receipt(d.attempt(),response.receipt());var w=c.work();
             if(!c.valid() || !live(w,d.work()) || !data.now().isBefore(d.deadline())){
                 data.write("UPDATE plan_external_attempt SET state='FENCED' WHERE id=?",d.attempt());
                 if(c.valid() && w.generation()==d.work().generation() && !List.of("SUCCEEDED","FAILED_FINAL").contains(w.state()))state(w,"WAITING_MANUAL","LATE_RESPONSE");return;}
@@ -360,8 +362,9 @@ public final class PlanService implements MaterialDeletionParticipant {
         });
     }
     private void recordFailure(Dispatch d,PlanTransport.Failure failure){
+        try{
         auditReceipt(d,failure.receipt);
-        try{transaction.executeWithoutResult(status->{var c=context(d.work(),true);receipt(d.attempt(),failure.receipt);
+        transaction.executeWithoutResult(status->{var c=context(d.work(),true);receipt(d.attempt(),failure.receipt);
             if(c.valid() && c.work().generation()==d.work().generation() && !"SUCCEEDED".equals(c.work().state()))failure(c.work(),failure.category,"EXTERNAL_UNKNOWN".equals(failure.category));
         });}catch(RuntimeException unknown){pause(d.work(),"EXTERNAL_UNKNOWN");throw unknown;}
     }

@@ -39,6 +39,7 @@ class PlanGenerationIT {
     static final AtomicReference<String> MODE=new AtomicReference<>("NORMAL"),COMMIT_LOSS=new AtomicReference<>("");
     static final AtomicInteger QUERIES=new AtomicInteger(),GENERATIONS=new AtomicInteger();
     static final AtomicBoolean PAUSE_READ_FAIL=new AtomicBoolean();
+    static final AtomicBoolean RECEIPT_ROLLBACK=new AtomicBoolean();
     static final AtomicInteger PAUSE_READS=new AtomicInteger();
     static final List<Map<String,Object>> HTTP_EVENTS=new CopyOnWriteArrayList<>();
     static volatile CountDownLatch entered=new CountDownLatch(0),release=new CountDownLatch(0);
@@ -68,7 +69,7 @@ class PlanGenerationIT {
             int sent=QUERIES.incrementAndGet();HTTP_EVENTS.add(Map.of("kind","QUERY","sequence",sent,"mode",MODE.get(),"at",java.time.Instant.now().toString()));var raw=JSON.readTree(exchange.getRequestBody().readAllBytes());assertThat(raw.path("dimension").asInt()).isEqualTo(1024);
             Object vector=MODE.get().equals("BAD_VECTOR")?List.of(1d):KnowledgeCollectionIT.vector(0);
             byte[] bytes=JSON.writeValueAsBytes(Map.of("content",Map.of("vector",vector),"requestId","query-"+UUID.randomUUID(),"inputTokens",10));
-            exchange.sendResponseHeaders(200,bytes.length);exchange.getResponseBody().write(bytes);exchange.close();
+            exchange.sendResponseHeaders(MODE.get().equals("QUERY_FAIL")?500:200,bytes.length);exchange.getResponseBody().write(bytes);exchange.close();
         });
         supplier.createContext("/generate",exchange->{
             int sent=GENERATIONS.incrementAndGet();var raw=JSON.readTree(exchange.getRequestBody().readAllBytes());String mode=MODE.get();HTTP_EVENTS.add(Map.of("kind","GENERATE","sequence",sent,"mode",mode,"at",java.time.Instant.now().toString()));
@@ -101,7 +102,7 @@ class PlanGenerationIT {
     @AfterAll static void close() throws Exception {release.countDown();if(context!=null)context.close();if(supplier!=null)supplier.stop(0);if(supplierThreads!=null)supplierThreads.shutdownNow();
         if(database!=null)java.nio.file.Files.writeString(Path.of("../.cache",database+"-facts.json"),JSON.writeValueAsString(Map.of("httpEvents",HTTP_EVENTS,"queryRequests",QUERIES.get(),"generationRequests",GENERATIONS.get(),"workspaces",jdbc.queryForList("SELECT id,operation_id,state,reason,generation,initial_used,auto_used,manual_used,query_used,resume_seq,input IS NULL AS input_purged,query_vector IS NULL AS vector_purged,evidence IS NULL AS evidence_purged,prompt IS NULL AS prompt_purged FROM plan_workspace ORDER BY created_at"),"attempts",jdbc.queryForList("SELECT id,workspace_id,kind,ordinal,category,state,request_id,input_tokens,output_tokens,cost_unknown FROM plan_external_attempt ORDER BY created_at"),"cleanup",jdbc.queryForList("SELECT target_id,state FROM material_cleanup_item WHERE target_type='PLAN_PRIVATE_GRAPH' ORDER BY target_id"))));
     }
-    @AfterEach void reset(){MODE.set("NORMAL");COMMIT_LOSS.set("");PAUSE_READ_FAIL.set(false);release.countDown();}
+    @AfterEach void reset(){MODE.set("NORMAL");COMMIT_LOSS.set("");PAUSE_READ_FAIL.set(false);RECEIPT_ROLLBACK.set(false);release.countDown();}
 
     @Test @Order(1) void defaultPlanUsesProductionOwnersAndReplaysOriginalResult() throws Exception {
         Client c=new Client(owner);var m=material(c);UUID creation=UUID.randomUUID();var input=input(m);
@@ -373,6 +374,53 @@ class PlanGenerationIT {
         catch(Exception | AssertionError failure){child.destroyForcibly();child.waitFor(10,TimeUnit.SECONDS);throw failure;}
     }
 
+    @Test @Order(29) void queryReceiptRollbackPausesAndRecoversWithoutRestart() throws Exception {queryReceiptRecovery(false);}
+    @Test @Order(30) void queryReceiptCommitLossPausesAndRecoversWithoutRestart() throws Exception {queryReceiptRecovery(true);}
+    void queryReceiptRecovery(boolean committed) throws Exception {
+        Client c=new Client(owner);var w=create(c);UUID workspace=id(w,"workspaceId"),op=UUID.randomUUID();int queries=QUERIES.get(),generations=GENERATIONS.get();var application=context;
+        if(committed)COMMIT_LOSS.set("RECEIPT");else RECEIPT_ROLLBACK.set(true);
+        generate(c,w,op);awaitState(c,op,"PAUSED_LOCAL");Thread.sleep(350);
+        assertThat(context).isSameAs(application);assertThat(QUERIES.get()-queries).isEqualTo(1);assertThat(GENERATIONS.get()).isEqualTo(generations);
+        var attempt=jdbc.queryForMap("SELECT id,request_id,input_tokens,cost_unknown FROM plan_external_attempt WHERE workspace_id=? AND kind='QUERY'",workspace);
+        if(committed){assertThat(attempt.get("request_id")).isNotNull();assertThat(((Number)attempt.get("input_tokens")).longValue()).isEqualTo(10);}
+        else{assertThat(attempt.get("request_id")).isNull();assertThat(attempt.get("input_tokens")).isNull();}
+        assertThat(attempt.get("cost_unknown")).isEqualTo(true);assertThat(operation(c,op).path("queryUsed").asInt()).isEqualTo(1);assertThat(operation(c,op).path("initialUsed").asInt()).isZero();
+        assertThat(jdbc.queryForObject("SELECT query_vector IS NULL FROM plan_workspace WHERE id=?",Boolean.class,workspace)).isTrue();
+        resume(c,op,"RETRY",true);awaitState(c,op,"SUCCEEDED");assertThat(context).isSameAs(application);
+        assertThat(operation(c,op).path("queryUsed").asInt()).isEqualTo(2);assertThat(operation(c,op).path("initialUsed").asInt()).isEqualTo(1);assertThat(operation(c,op).path("autoUsed").asInt()).isZero();
+        assertThat(QUERIES.get()-queries).isEqualTo(2);assertThat(GENERATIONS.get()-generations).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT request_id FROM plan_external_attempt WHERE id=?",String.class,attempt.get("id"))).isEqualTo(attempt.get("request_id"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM interview_plan WHERE workspace_id=?",Integer.class,workspace)).isEqualTo(1);
+    }
+    @Test @Order(31) void queryFailureReceiptRollbackAlsoRemainsRecoverable() throws Exception {
+        Client c=new Client(owner);var w=create(c);UUID op=UUID.randomUUID();int queries=QUERIES.get(),generations=GENERATIONS.get();MODE.set("QUERY_FAIL");RECEIPT_ROLLBACK.set(true);generate(c,w,op);awaitState(c,op,"WAITING_MANUAL");
+        assertThat(operation(c,op).path("requiresCostConfirmation").asBoolean()).isTrue();assertThat(QUERIES.get()-queries).isEqualTo(1);assertThat(GENERATIONS.get()).isEqualTo(generations);
+        assertThat(c.post("/api/plan-operations/"+op+"/resume",Map.of("action","RETRY","acceptUnknownCost",false),UUID.randomUUID()).statusCode()).isEqualTo(409);
+        MODE.set("NORMAL");resume(c,op,"RETRY",true);awaitState(c,op,"SUCCEEDED");assertThat(operation(c,op).path("queryUsed").asInt()).isEqualTo(2);
+    }
+
+    @Test @Order(32) void chromeResumeUpdateAllowsExplicitNewPlanAfterReturningToMaterials() throws Exception {invalidatedBrowser("RESUME");}
+    @Test @Order(33) void chromeJdUpdateAllowsExplicitNewPlanAfterReturningToMaterials() throws Exception {invalidatedBrowser("JD");}
+    void invalidatedBrowser(String kind) throws Exception {
+        var browserAccount=KnowledgeCollectionIT.account(AccountAuthority.TRIAL_USER);Client c=new Client(browserAccount);var material=material(c);int before=GENERATIONS.get();int port=freePort();
+        MODE.set("BLOCK");entered=new CountDownLatch(1);release=new CountDownLatch(1);var directory=Path.of("../frontend").toAbsolutePath().normalize();var prefix=Path.of("../.cache",database+"-invalidated-"+kind.toLowerCase(Locale.ROOT)).toAbsolutePath();
+        var vite=new ProcessBuilder("node.exe","node_modules/vite/bin/vite.js","--host","127.0.0.1","--port",Integer.toString(port),"--strictPort").directory(directory.toFile()).redirectErrorStream(true).redirectOutput(Path.of(prefix+"-vite.log").toFile());safeEnvironment(vite);vite.environment().put("BACKEND_URL",base.toString());Process server=vite.start();Process browser=null;
+        try{
+            await(()->KnowledgeIndexIT.healthy(URI.create("http://127.0.0.1:"+port+"/login")));
+            var node=new ProcessBuilder("node.exe","../scripts/Verify-P4PlanBrowser.mjs").directory(directory.toFile()).redirectErrorStream(true).redirectOutput(Path.of(prefix+".log").toFile());safeEnvironment(node);
+            node.environment().putAll(Map.ofEntries(Map.entry("P4_FRONTEND_BASE","http://127.0.0.1:"+port),Map.entry("P4_BROWSER_USER",browserAccount.login()),Map.entry("P4_BROWSER_PASSWORD",browserAccount.password()),Map.entry("P4_BROWSER_OWNER",browserAccount.id().toString()),Map.entry("P4_BROWSER_ROOT",material.root().toString()),Map.entry("P4_BROWSER_VERSION",material.resume().toString()),Map.entry("P4_BROWSER_SCENARIO","INVALIDATED"),Map.entry("P4_BROWSER_UPDATE_KIND",kind),Map.entry("P4_BROWSER_SCREENSHOT",prefix+".png"),Map.entry("P4_BROWSER_REPORT",prefix+".json")));
+            browser=node.start();assertThat(entered.await(20,TimeUnit.SECONDS)).isTrue();String table=kind.equals("RESUME")?"material_resume_version":"material_jd_version";
+            await(()->jdbc.queryForObject("SELECT count(*) FROM "+table+" WHERE resume_id=?",Integer.class,material.root())==2);MODE.set("NORMAL");release.countDown();
+            assertThat(browser.waitFor(120,TimeUnit.SECONDS)).as("Chrome review evidence %s.log",prefix).isTrue();assertThat(browser.exitValue()).as("Chrome review evidence %s.log",prefix).isZero();
+            var proof=JSON.readTree(java.nio.file.Files.readString(Path.of(prefix+".json")));UUID old=UUID.fromString(proof.path("old").path("workspace").asString()),next=UUID.fromString(proof.path("current").path("workspace").asString());
+            assertThat(jdbc.queryForObject("SELECT state FROM plan_workspace WHERE id=?",String.class,old)).isEqualTo("INVALIDATED");assertThat(jdbc.queryForObject("SELECT count(*) FROM interview_plan WHERE workspace_id=?",Integer.class,old)).isZero();
+            assertThat(jdbc.queryForObject("SELECT state FROM plan_workspace WHERE id=?",String.class,next)).isEqualTo("SUCCEEDED");assertThat(jdbc.queryForObject("SELECT count(*) FROM plan_workspace WHERE resume_id=?",Integer.class,material.root())).isEqualTo(2);assertThat(GENERATIONS.get()-before).isEqualTo(2);
+            String key=kind.equals("RESUME")?"resumeVersionId":"jdVersionId";UUID latest=jdbc.queryForObject("SELECT id FROM "+table+" WHERE resume_id=? AND version_no=2",UUID.class,material.root());
+            assertThat(jdbc.queryForObject("SELECT input->>? FROM plan_workspace WHERE id=?",String.class,key,next)).isEqualTo(latest.toString());
+            assertThat(jdbc.queryForObject("SELECT input->>? FROM plan_workspace WHERE id=?",String.class,key,old)).isEqualTo((kind.equals("RESUME")?material.resume():material.jd()).toString());
+        }finally{release.countDown();if(browser!=null && browser.isAlive())browser.destroyForcibly();server.destroyForcibly();server.waitFor(10,TimeUnit.SECONDS);}
+    }
+
     static int freePort() throws Exception {try(var socket=new java.net.ServerSocket(0,1,InetAddress.getLoopbackAddress())){return socket.getLocalPort();}}
     static String javaExecutable(){return Path.of(System.getProperty("java.home"),"bin","java.exe").toString();}
     static void safeEnvironment(ProcessBuilder process){
@@ -425,7 +473,9 @@ class PlanGenerationIT {
                         if(sql.startsWith("INSERT INTO interview_plan"))stage.set("PLAN");
                         if(sql.startsWith("INSERT INTO plan_external_attempt"))stage.set("INTENT");
                         if(sql.startsWith("UPDATE plan_workspace SET state='PAUSED_LOCAL'"))stage.set("PAUSE");
+                        if(sql.startsWith("UPDATE plan_external_attempt SET request_id=COALESCE"))stage.set("RECEIPT");
                     }
+                    if(method.getName().equals("commit") && stage.get().equals("RECEIPT") && RECEIPT_ROLLBACK.compareAndSet(true,false)){real.rollback();throw new SQLException("Synthetic receipt transaction rollback","08006");}
                     Object result=method.invoke(real,args);
                     if(method.getName().equals("commit") && !stage.get().isEmpty() && COMMIT_LOSS.compareAndSet(stage.get(),"")){if(stage.get().equals("PAUSE"))PAUSE_READ_FAIL.set(true);throw new SQLException("Synthetic lost actual commit acknowledgment","08006");}
                     return result;

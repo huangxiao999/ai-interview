@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useSessionStore } from './session'
 import { ApiError } from '../api/http'
 import { getDeletion } from '../api/materials'
@@ -26,6 +26,16 @@ export const usePlansStore = defineStore('plans', () => {
   const receipt = ref<Receipt | null>(null)
   const busy = ref(false)
   const message = ref('')
+  // 只能丢弃本人已核实终态的本地回执；未知、在途和跨账号状态没有新建出口。
+  const canNewPlan = computed(
+    () =>
+      !busy.value &&
+      session.status === 'authenticated' &&
+      receipt.value?.owner === session.identity?.accountId &&
+      !!view.value &&
+      receipt.value?.workspace === view.value.workspaceId &&
+      ['SUCCEEDED', 'FAILED_FINAL', 'INVALIDATED'].includes(view.value.state),
+  )
   let epoch = 0
   function restore(): void {
     receipt.value = null
@@ -192,7 +202,7 @@ export const usePlansStore = defineStore('plans', () => {
     )
   }
   function newPlan(): void {
-    if (!view.value || !['SUCCEEDED', 'FAILED_FINAL'].includes(view.value.state)) return
+    if (!canNewPlan.value) return
     epoch++
     view.value = null
     receipt.value = null
@@ -230,5 +240,5 @@ export const usePlansStore = defineStore('plans', () => {
     view.value = null
     busy.value = false
   }
-  return { view, receipt, busy, message, query, start, resume, newPlan, openLink, hide }
+  return { view, receipt, busy, message, query, start, resume, newPlan, canNewPlan, openLink, hide }
 })
