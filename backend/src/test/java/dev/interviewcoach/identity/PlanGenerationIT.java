@@ -40,6 +40,7 @@ class PlanGenerationIT {
     static final AtomicInteger QUERIES=new AtomicInteger(),GENERATIONS=new AtomicInteger();
     static final AtomicBoolean PAUSE_READ_FAIL=new AtomicBoolean();
     static final AtomicBoolean RECEIPT_ROLLBACK=new AtomicBoolean();
+    static final AtomicBoolean REVISION_ROLLBACK=new AtomicBoolean();
     static final AtomicBoolean EVIDENCE_ROLLBACK=new AtomicBoolean(),EVIDENCE_COMMIT_LOSS=new AtomicBoolean();
     static final AtomicInteger EVIDENCE_FAILURES=new AtomicInteger();
     static final AtomicInteger PAUSE_READS=new AtomicInteger();
@@ -64,8 +65,8 @@ class PlanGenerationIT {
         Flyway.configure().dataSource(System.getenv("DB_URL"),System.getenv("DB_USERNAME"),System.getenv("DB_PASSWORD")).schemas("app").defaultSchema("app").target("9").load().migrate();
         var old=jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' ORDER BY installed_rank");
         var flyway=Flyway.configure().dataSource(System.getenv("DB_URL"),System.getenv("DB_USERNAME"),System.getenv("DB_PASSWORD")).schemas("app").defaultSchema("app").load();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(3);flyway.validate();assertThat(flyway.migrate().migrationsExecuted).isZero();
-        assertThat(jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' AND version NOT IN ('10','11','12') ORDER BY installed_rank")).isEqualTo(old);
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(4);flyway.validate();assertThat(flyway.migrate().migrationsExecuted).isZero();
+        assertThat(jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' AND version NOT IN ('10','11','12','13') ORDER BY installed_rank")).isEqualTo(old);
         supplier=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);supplierThreads=Executors.newFixedThreadPool(8);supplier.setExecutor(supplierThreads);
         supplier.createContext("/query",exchange->{
             int sent=QUERIES.incrementAndGet();HTTP_EVENTS.add(Map.of("kind","QUERY","sequence",sent,"mode",MODE.get(),"at",java.time.Instant.now().toString()));var raw=JSON.readTree(exchange.getRequestBody().readAllBytes());assertThat(raw.path("dimension").asInt()).isEqualTo(1024);
@@ -539,6 +540,7 @@ class PlanGenerationIT {
                         if(sql.startsWith("SELECT * FROM plan_workspace") && Thread.currentThread().getName().contains("scheduling") && PAUSE_READ_FAIL.get()){PAUSE_READS.incrementAndGet();throw new SQLException("Synthetic pause read unavailable","08006");}
                         if(sql.startsWith("INSERT INTO plan_generation_candidate"))stage.set("CANDIDATE");
                         if(sql.startsWith("INSERT INTO interview_plan"))stage.set("PLAN");
+                        if(sql.startsWith("INSERT INTO plan_revision_request"))stage.set(sql.contains("'SAVE'")?"REVISION_SAVE":"REVISION_CONFIRM");
                         if(sql.startsWith("INSERT INTO plan_external_attempt"))stage.set("INTENT");
                         if(sql.startsWith("UPDATE plan_workspace SET state='PAUSED_LOCAL'"))stage.set("PAUSE");
                         if(sql.startsWith("UPDATE plan_external_attempt SET request_id=COALESCE"))stage.set("RECEIPT");
@@ -546,6 +548,7 @@ class PlanGenerationIT {
                     }
                     if(method.getName().equals("commit") && stage.get().equals("RECEIPT") && RECEIPT_ROLLBACK.compareAndSet(true,false)){real.rollback();throw new SQLException("Synthetic receipt transaction rollback","08006");}
                     if(method.getName().equals("commit") && stage.get().equals("EVIDENCE") && EVIDENCE_ROLLBACK.compareAndSet(true,false)){real.rollback();EVIDENCE_FAILURES.incrementAndGet();throw new SQLException("Synthetic evidence transaction rollback","08006");}
+                    if(method.getName().equals("commit") && stage.get().startsWith("REVISION_") && REVISION_ROLLBACK.compareAndSet(true,false)){real.rollback();throw new SQLException("Synthetic revision transaction rolled back","08006");}
                     Object result=method.invoke(real,args);
                     if(method.getName().equals("commit") && stage.get().equals("EVIDENCE") && EVIDENCE_COMMIT_LOSS.compareAndSet(true,false)){EVIDENCE_FAILURES.incrementAndGet();throw new SQLException("Synthetic evidence actual commit acknowledgment lost","08006");}
                     if(method.getName().equals("commit") && !stage.get().isEmpty() && COMMIT_LOSS.compareAndSet(stage.get(),"")){if(stage.get().equals("PAUSE"))PAUSE_READ_FAIL.set(true);throw new SQLException("Synthetic lost actual commit acknowledgment","08006");}

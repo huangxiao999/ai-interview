@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import { useSessionStore } from '../stores/session'
 import { usePlansStore } from '../stores/plans'
+import { usePlanRevisionsStore } from '../stores/planRevisions'
+import PlanRevisionEditor from '../components/PlanRevisionEditor.vue'
 import { listVersions, type ResumeSummary } from '../api/materials'
 import { planPreparation, type PlanOption } from '../api/plans'
 
@@ -10,6 +12,7 @@ const route = useRoute()
 const router = useRouter()
 const session = useSessionStore()
 const plans = usePlansStore()
+const revisions = usePlanRevisionsStore()
 const resumeId = ref(typeof route.query.resumeId === 'string' ? route.query.resumeId : '')
 const resumeVersion = ref(
   typeof route.query.resumeVersionId === 'string' ? route.query.resumeVersionId : '',
@@ -106,7 +109,9 @@ async function start(): Promise<void> {
 }
 async function prepareNew(): Promise<void> {
   const root = plans.view?.resumeId
-  if (!root || !plans.canNewPlan) return
+  if (!root || !plans.canNewPlan || revisions.busy || revisions.unknown) return
+  if (revisions.dirty && !window.confirm('存在未保存草稿，准备新计划将丢弃草稿，是否继续？')) return
+  revisions.hide()
   plans.newPlan()
   confirmed.value = false
   acceptCost.value = false
@@ -157,8 +162,20 @@ onMounted(() => {
 onUnmounted(() => {
   generation++
   clearInterval(timer)
+  window.removeEventListener('beforeunload', warnUnsaved)
+  revisions.hide()
 })
+function warnUnsaved(event: BeforeUnloadEvent): void {
+  if (revisions.dirty) {
+    event.preventDefault()
+    event.returnValue = ''
+  }
+}
+onMounted(() => window.addEventListener('beforeunload', warnUnsaved))
 onBeforeRouteLeave(() => {
+  if (revisions.dirty && !window.confirm('存在未保存的计划草稿，离开将丢弃草稿，是否继续？'))
+    return false
+  revisions.hide()
   plans.hide()
 })
 </script>
@@ -315,7 +332,7 @@ onBeforeRouteLeave(() => {
           </button>
         </template>
         <section v-if="plans.view.plan" id="plan-result">
-          <h2>默认考察安排</h2>
+          <h2>首次生成安排（原结果）</h2>
           <p>
             {{ plans.view.plan.content.totalQuestions }}道主问题；预计
             {{ plans.view.plan.content.estimatedMinutes ?? '暂不可用' }} 分钟，不强制结束。
@@ -337,9 +354,15 @@ onBeforeRouteLeave(() => {
               ><span v-else>来源链接协议不可访问</span>
             </li>
           </ul>
-          <p>当前为工程验证结果，尚未开放真实面试、调整和确认功能。</p>
+          <PlanRevisionEditor :plan-id="plans.view.plan.planId" />
         </section>
-        <button v-if="plans.canNewPlan" id="plan-new" type="button" @click="prepareNew">
+        <button
+          v-if="plans.canNewPlan"
+          id="plan-new"
+          type="button"
+          :disabled="revisions.busy || revisions.unknown"
+          @click="prepareNew"
+        >
           {{ plans.view.state === 'INVALIDATED' ? '按更新资料准备新计划' : '准备另一份计划' }}
         </button>
       </section>

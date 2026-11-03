@@ -360,6 +360,9 @@ public final class PlanService implements MaterialDeletionParticipant {
                 validate(parsed.plan(),w.input(),c.facts(),proof.pieces().stream().map(PlanEvidenceFacts.Piece::chunkId).toList());
                 data.write("INSERT INTO interview_plan(id,revision_id,workspace_id,payload,eligibility) VALUES(?,?,?,?::jsonb,'ENGINEERING_ONLY') ON CONFLICT(workspace_id) DO NOTHING",
                         UUID.randomUUID(),UUID.randomUUID(),w.id(),mapper.writeValueAsString(parsed.plan()));
+                // 原生成结果身份不变；初始修订和当前指针与接收共同提交。
+                data.write("INSERT INTO plan_revision(id,plan_id,revision_no,payload,created_at) SELECT revision_id,id,1,payload,created_at FROM interview_plan WHERE workspace_id=? ON CONFLICT DO NOTHING",w.id());
+                data.write("UPDATE interview_plan SET current_revision_id=revision_id WHERE workspace_id=? AND current_revision_id IS NULL",w.id());
                 data.write("UPDATE plan_generation_candidate SET state='ACCEPTED' WHERE id=?",candidate.id());state(w,"SUCCEEDED",null);
             }catch(Rejected | MaterialPlanFacts.Rejected | tools.jackson.core.JacksonException invalid){
                 data.write("UPDATE plan_generation_candidate SET state='REJECTED' WHERE id=?",candidate.id());failure(w,"INVALID_CANDIDATE",false);
@@ -387,7 +390,8 @@ public final class PlanService implements MaterialDeletionParticipant {
     @Override public Impact impact(UUID owner,UUID root){
         return new Impact(data.count("SELECT count(*) FROM interview_plan p JOIN plan_workspace w ON w.id=p.workspace_id WHERE w.owner_id=? AND w.resume_id=?",owner,root),
                 data.count("SELECT count(*) FROM plan_workspace WHERE owner_id=? AND resume_id=? AND operation_id IS NOT NULL",owner,root),
-                data.count("SELECT count(*) FROM plan_generation_candidate c JOIN plan_workspace w ON w.id=c.workspace_id WHERE w.owner_id=? AND w.resume_id=?",owner,root));
+                data.count("SELECT count(*) FROM plan_generation_candidate c JOIN plan_workspace w ON w.id=c.workspace_id WHERE w.owner_id=? AND w.resume_id=?",owner,root),
+                data.count("SELECT count(*) FROM plan_revision r JOIN interview_plan p ON p.id=r.plan_id JOIN plan_workspace w ON w.id=p.workspace_id WHERE w.owner_id=? AND w.resume_id=?",owner,root));
     }
     @Override public void invalidateAndRegister(UUID owner,UUID root,UUID deletion){
         for(UUID id:data.graphs(root)){data.lock(id);var w=data.find(id).orElseThrow();if(!w.owner().equals(owner))throw new IllegalStateException("Plan owner mismatch");
@@ -403,6 +407,7 @@ public final class PlanService implements MaterialDeletionParticipant {
             data.write("UPDATE plan_input_revision SET confirmation=NULL WHERE workspace_id=?",id);
             data.write("UPDATE plan_generation_candidate SET payload=NULL,state='PURGED' WHERE workspace_id=?",id);
             data.write("UPDATE interview_plan SET payload=NULL WHERE workspace_id=?",id);
+            data.write("UPDATE plan_revision SET payload=NULL WHERE plan_id IN(SELECT id FROM interview_plan WHERE workspace_id=?)",id);
             data.write("UPDATE material_cleanup_item SET state='CLEANED' WHERE id=?",target.get("id"));
             data.write("UPDATE material_delete_request d SET state='CLEANED',cleaned_at=clock_timestamp() WHERE id=? AND state='PENDING' "
                     +"AND NOT EXISTS(SELECT 1 FROM material_cleanup_item c WHERE c.delete_request_id=d.id AND c.state='PENDING')",target.get("delete_request_id"));
