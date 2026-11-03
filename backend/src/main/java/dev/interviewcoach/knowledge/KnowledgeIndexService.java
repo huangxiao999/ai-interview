@@ -25,14 +25,16 @@ public final class KnowledgeIndexService {
     private final EmbeddingGateway gateway;
     private final ObjectMapper mapper;
     private final TransactionTemplate transaction;
+    private final dev.interviewcoach.execution.ExternalAiPermits permits;
     private final UUID executor=UUID.randomUUID();
     // 单活动执行者至多保留一项待暂停身份；数据库故障不能把暂停降为自动重做接收。
     private final java.util.concurrent.atomic.AtomicReference<AcceptancePause> pendingAcceptancePause =
             new java.util.concurrent.atomic.AtomicReference<>();
 
     KnowledgeIndexService(KnowledgeIndexRepository repository, KnowledgeRepository knowledge, AccountWriteGuard accounts,
-            EmbeddingGateway gateway,ObjectMapper mapper,PlatformTransactionManager manager) {
+            EmbeddingGateway gateway,ObjectMapper mapper,PlatformTransactionManager manager,dev.interviewcoach.execution.ExternalAiPermits permits) {
         this.repository=repository;this.knowledge=knowledge;this.accounts=accounts;this.gateway=gateway;this.mapper=mapper;
+        this.permits=permits;
         transaction=new TransactionTemplate(manager);
         transaction.setTimeout(5);
     }
@@ -118,6 +120,7 @@ public final class KnowledgeIndexService {
         var original=repository.findBuild(selected.build()).orElseThrow();
         Dispatch dispatch;
         var accepting=new java.util.concurrent.atomic.AtomicReference<AcceptancePause>();
+        var reserved=new java.util.concurrent.atomic.AtomicBoolean();
         try {
         dispatch=transaction.execute(status->{
             var currentActor=accounts.lockCurrentAccount(original.owner());
@@ -143,11 +146,14 @@ public final class KnowledgeIndexService {
                 repository.state(build.id(),batch.id(),"WAITING_MANUAL","SERVICE_UNAVAILABLE");return null;
             }
             UUID attempt=UUID.randomUUID();
+            if(!permits.acquire())return null;
+            reserved.set(true);
             OffsetDateTime now=repository.now();
             repository.dispatch(build,batch,attempt,executor,now);
             return new Dispatch(build,repository.findBatch(batch.id()).orElseThrow(),now.plusSeconds(KnowledgeIndexPolicy.SERVICE_SECONDS));
         });
         } catch(RuntimeException failure) {
+            if(reserved.getAndSet(false))permits.release();
             if(accepting.get()!=null) {
                 pendingAcceptancePause.set(accepting.get());
                 try { reconcileAcceptancePause(); }
@@ -168,7 +174,9 @@ public final class KnowledgeIndexService {
             }));
             if(!valid) return;
             var chunks=chunks(dispatch.batch());
-            var response=gateway.embed(chunks.stream().map(KnowledgeIndexPolicy.Chunk::text).toList(),dispatch.deadline().toInstant());
+            EmbeddingGateway.Response response;
+            try { response=gateway.embed(chunks.stream().map(KnowledgeIndexPolicy.Chunk::text).toList(),dispatch.deadline().toInstant()); }
+            finally { if(reserved.getAndSet(false))permits.release(); }
             var receipt=response==null ? EmbeddingGateway.Receipt.UNKNOWN
                     :new EmbeddingGateway.Receipt(response.requestId(),response.usageTokens());
             observed=receipt;
@@ -188,7 +196,7 @@ public final class KnowledgeIndexService {
                 if(active(dispatch)) repository.failed(dispatch.build(),dispatch.batch(),failure.category,
                         failure.category.equals("EXTERNAL_UNKNOWN") || failure.category.equals("DEADLINE"));
             });
-        }
+        } finally { if(reserved.getAndSet(false))permits.release(); }
     }
 
     /** 未核实暂停之前只重试核实/登记，不接收候选或派发；已提交结果不能被改回暂停。 */

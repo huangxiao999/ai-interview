@@ -134,10 +134,14 @@ public final class KnowledgeCollectionService {
     }
 
     Evidence probe(Actor actor,UUID expected,UUID collection,KnowledgeCollectionPolicy.Probe input) {
+        return transaction.execute(status->{current(actor,expected);return selectFixed(collection,input);});
+    }
+    /** 同一M-06生产过滤规则供首个M-03消费者使用；调用方已持账号/资料锁，共享当前事务。 */
+    Evidence selectFixed(UUID collection,KnowledgeCollectionPolicy.Probe input) {
+        if(!org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("Evidence selection requires caller transaction");
         if(input==null)throw new InvalidKnowledge("请提供固定集合配置及公共/合成向量");
         String vector=KnowledgeCollectionPolicy.vector(input.vector());
-        return transaction.execute(status->{
-            current(actor,expected);
             var fixed=collections.find(collection).orElseThrow(KnowledgeUnavailable::new);
             lockRoots(collections.roots(collection));
             if(!fixed.configDigest().equals(input.configDigest()))throw new KnowledgeConflict();
@@ -163,7 +167,6 @@ public final class KnowledgeCollectionService {
             }
             return evidence(fixed,selected.isEmpty()?"NO_APPLICABLE_EVIDENCE":"EVIDENCE_AVAILABLE",
                     selected.isEmpty()?"NO_ELIGIBLE_MATCH":"SEMANTIC_SUPPORT_REVIEW_REQUIRED",List.copyOf(selected));
-        });
     }
     /** 维护者从生产能力读取实际片段身份/原文，发布标注无需直接访问数据库。 */
     PublicationSource publicationSource(Actor actor,UUID buildId) {

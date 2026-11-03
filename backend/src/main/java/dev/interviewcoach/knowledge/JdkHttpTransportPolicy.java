@@ -19,7 +19,7 @@ public final class JdkHttpTransportPolicy {
                 "-Djdk.httpclient.enableAllMethodRetry=false");
     }
 
-    static boolean enforced() {
+    public static boolean enforced() {
         if (!STARTUP_SAFE) return false;
         for (var entry : REQUIRED.entrySet()) {
             if (!entry.getValue().equals(System.getProperty(entry.getKey()))) return false;
