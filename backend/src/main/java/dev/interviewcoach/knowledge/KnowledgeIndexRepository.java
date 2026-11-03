@@ -64,6 +64,11 @@ class KnowledgeIndexRepository {
         jdbc.update("UPDATE knowledge_index_batch SET state='INVALIDATED',generation=generation+1 WHERE id=?", batch.id());
         jdbc.update("UPDATE knowledge_index_build SET state='INVALIDATED',error_category='QUALIFICATION_CHANGED' WHERE id=?", build.id());
     }
+    /** 版本根锁内的停用屏障；终结构建和原候选留作审计，失效代次阻止迟到接收。 */
+    void invalidateForStop(UUID version) {
+        jdbc.update("UPDATE knowledge_index_batch SET state='INVALIDATED',generation=generation+1 WHERE state NOT IN ('ACCEPTED','FAILED_FINAL','INVALIDATED') AND build_id IN (SELECT id FROM knowledge_index_build WHERE version_id=? AND state NOT IN ('SUCCEEDED','FAILED_FINAL','INVALIDATED'))",version);
+        jdbc.update("UPDATE knowledge_index_build SET state='INVALIDATED',error_category='QUALIFICATION_CHANGED' WHERE version_id=? AND state NOT IN ('SUCCEEDED','FAILED_FINAL','INVALIDATED')",version);
+    }
     void dispatch(Build b, Batch batch, UUID attempt, UUID executor, OffsetDateTime now) {
         jdbc.update("INSERT INTO knowledge_index_attempt(id,batch_id,attempt_no,generation,executor_id,state,started_at,deadline) VALUES(?,?,?,?,?,'DISPATCH_INTENT',?,?)",
                 attempt, batch.id(), batch.attempts()+1, batch.generation()+1, executor, now, now.plusSeconds(KnowledgeIndexPolicy.SERVICE_SECONDS));

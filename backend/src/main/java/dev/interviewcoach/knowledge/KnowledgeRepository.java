@@ -51,7 +51,7 @@ class KnowledgeRepository {
     void createRoot(UUID id) { jdbc.update("INSERT INTO knowledge_document(id) VALUES(?)", id); }
 
     boolean reservedIndexOperation(UUID actor, UUID operation) {
-        return jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM knowledge_index_request WHERE actor_id=? AND operation_id=?)",Boolean.class,actor,operation);
+        return jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM knowledge_index_request WHERE actor_id=? AND operation_id=? UNION ALL SELECT 1 FROM knowledge_collection_request WHERE actor_id=? AND operation_id=?)",Boolean.class,actor,operation,actor,operation);
     }
 
     void lockRoot(UUID id) {
@@ -77,7 +77,7 @@ class KnowledgeRepository {
     }
 
     Optional<Version> findApproved(UUID versionId) {
-        return jdbc.query(SELECT + " WHERE v.id=? AND r.decision='APPROVE'", MAPPER, versionId)
+        return jdbc.query(SELECT + " WHERE v.id=? AND r.decision='APPROVE' AND NOT EXISTS(SELECT 1 FROM knowledge_version_stop s WHERE s.version_id=v.id)", MAPPER, versionId)
                 .stream().findFirst();
     }
 

@@ -11,7 +11,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
-@RestControllerAdvice(assignableTypes = {KnowledgeApi.class, KnowledgeIndexApi.class})
+@RestControllerAdvice(assignableTypes = {KnowledgeApi.class, KnowledgeIndexApi.class, KnowledgeCollectionApi.class})
 final class KnowledgeApiErrors {
     @ExceptionHandler(IndexServiceUnavailable.class)
     ResponseEntity<ErrorBody> indexUnavailable() { return error(503, "INDEX_SERVICE_UNAVAILABLE", "向量服务尚未核实启用，本次未派发"); }
@@ -25,7 +25,7 @@ final class KnowledgeApiErrors {
     @ExceptionHandler(KnowledgeConflict.class)
     ResponseEntity<ErrorBody> conflict() { return error(409, "OPERATION_CONFLICT", "操作身份或版本摘要与原请求不符"); }
     @ExceptionHandler(KnowledgeStateConflict.class)
-    ResponseEntity<ErrorBody> state() { return error(409, "KNOWLEDGE_STATE_CONFLICT", "该版本已有审核决定，请读取原事实"); }
+    ResponseEntity<ErrorBody> state() { return error(409, "KNOWLEDGE_STATE_CONFLICT", "知识资格、集合指针或操作状态已变化，请核实原事实"); }
     @ExceptionHandler(KnowledgeUnavailable.class)
     ResponseEntity<ErrorBody> missing() { return error(404, "RESOURCE_UNAVAILABLE", "知识版本或原操作不可访问"); }
     @ExceptionHandler(KnowledgeAccountChanged.class)
