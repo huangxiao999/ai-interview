@@ -72,8 +72,8 @@ class KnowledgeIndexIT {
         jdbc=new JdbcTemplate(new DriverManagerDataSource(System.getenv("DB_URL")+"?currentSchema=app",System.getenv("DB_USERNAME"),System.getenv("DB_PASSWORD")));
         var history=jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' ORDER BY installed_rank");
         var current=Flyway.configure().dataSource(System.getenv("DB_URL"),System.getenv("DB_USERNAME"),System.getenv("DB_PASSWORD")).schemas("app").defaultSchema("app").load();
-        assertThat(current.migrate().migrationsExecuted).isEqualTo(1);assertThat(current.migrate().migrationsExecuted).isZero();current.validate();
-        assertThat(jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' AND version<>'8' ORDER BY installed_rank")).isEqualTo(history);
+        assertThat(current.migrate().migrationsExecuted).isEqualTo(2);assertThat(current.migrate().migrationsExecuted).isZero();current.validate();
+        assertThat(jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' AND version NOT IN ('8','9') ORDER BY installed_rank")).isEqualTo(history);
         supplier=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         supplierThreads=Executors.newFixedThreadPool(4);supplier.setExecutor(supplierThreads);
         supplier.createContext("/embedding",exchange->{

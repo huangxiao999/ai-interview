@@ -20,6 +20,11 @@ spring:
       schema: app
   flyway:
     enabled: true
+    # 启动迁移使用同一目标库的专用连接，保留public扩展解析；业务Hikari仍仅app。
+    # 不参与业务事务，不改变AccountWriteGuard/TransactionTemplate共用的数据源。
+    url: ${DB_URL}
+    user: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
     locations: classpath:db/migration
     default-schema: app
     schemas: app

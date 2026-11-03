@@ -57,6 +57,12 @@ try {
     }
     throw new Error(`Timed out: ${label}`)
   }
+  // Page.reload的命令回执可能先于文档切换；不能把旧DOM出现当成新页面已就绪。
+  async function reloadPage() {
+    const previousOrigin = await evaluate('performance.timeOrigin')
+    await send('Page.reload', {}, sessionId)
+    await wait(`performance.timeOrigin !== ${previousOrigin} && document.readyState === 'complete'`, 'new document after reload')
+  }
   async function fill(selector, value) {
     await evaluate(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); e.value=${JSON.stringify(value)}; e.dispatchEvent(new Event('input',{bubbles:true})); })()`)
   }
@@ -87,7 +93,7 @@ try {
   async function preflightFailure(kind, endpoint, recovery) {
     const title=`Receipt ${kind} ${endpoint}`
     const content=`Synthetic unsent ${kind} ${endpoint}`
-    await send('Page.reload',{},sessionId)
+    await reloadPage()
     await wait(`!!document.querySelector('#knowledge-title') && !document.querySelector('#knowledge-title').matches(':disabled')`, 'fresh maintenance page')
     await fillKnowledge(title,content)
     let version
@@ -96,7 +102,7 @@ try {
       await wait(`document.querySelector('#knowledge-original')?.textContent===${JSON.stringify(content)} && document.body.textContent.includes('服务端已确认保存')`, 'real pending version created')
       version=await evaluate(`document.querySelector('section[aria-label="固定版本审核"] p').textContent.match(/[a-f0-9-]{36}/i)[0]`)
       // 重新装载以清空模块内CSRF缓存，确保本例实际经过CSRF预检。
-      await send('Page.reload',{},sessionId)
+      await reloadPage()
       await wait(`!!document.querySelector('#knowledge-title')`, 'pending fixture reload')
       await selectVersion(version)
       await fill('#knowledge-review-reason','Synthetic preflight review')
@@ -119,7 +125,7 @@ try {
     assert.equal(await evaluate(`sessionStorage.getItem('knowledge-original-operation')`),null)
     assert.equal(await evaluate(`Array.from(document.querySelectorAll('button')).some(e=>e.textContent.trim()==='核实原操作')`),false)
     await evaluate(`window.fetch=window.receiptNativeFetch`)
-    if(recovery==='reload') await send('Page.reload',{},sessionId)
+    if(recovery==='reload') await reloadPage()
     else await evaluate(`window.dispatchEvent(new Event('focus'))`)
     await wait(`!!document.querySelector('#knowledge-title') && !Array.from(document.querySelectorAll('button')).find(e=>e.textContent.trim()==='新建知识资料').disabled`, 'recheck leaves maintenance usable')
     assert.equal(await evaluate(`sessionStorage.getItem('knowledge-original-operation')`),null)

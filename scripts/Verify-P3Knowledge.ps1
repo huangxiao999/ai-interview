@@ -27,6 +27,7 @@ try {
     $sources=@(Get-ChildItem 'backend/src/main/java/dev/interviewcoach/knowledge' -Filter '*.java' | ForEach-Object { [IO.Path]::GetRelativePath($projectRoot,$_.FullName) })
     $sources+=@('backend/src/main/resources/db/migration/V7__create_reviewed_knowledge.sql','backend/src/test/java/dev/interviewcoach/identity/KnowledgeMaintenanceIT.java','scripts/Verify-P3Knowledge.ps1','scripts/Verify-P3KnowledgeBrowser.mjs','backend/src/main/java/dev/interviewcoach/identity/LocalSecurityConfiguration.java','frontend/src/api/knowledge.ts','frontend/src/stores/knowledge.ts','frontend/src/views/KnowledgePage.vue','frontend/src/router/index.ts','frontend/src/views/WorkspacePage.vue')
     $sources+=@('backend/src/main/resources/db/migration/V8__create_knowledge_index_builds.sql','frontend/src/api/auth.ts','frontend/src/api/http.ts','frontend/src/stores/session.ts')
+    $sources+=@('backend/src/main/resources/db/migration/V9__publish_knowledge_collections.sql','backend/src/main/resources/application-local.yml')
     $hashes=@{}; foreach ($source in $sources) { $hashes[$source]=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash }
     $manifest=@{ database=$testDatabase; createdAt=[DateTimeOffset]::Now.ToString('o'); status='running'; sourceSha256=$hashes; log=$logPath }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding UTF8

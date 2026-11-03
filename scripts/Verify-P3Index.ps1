@@ -41,6 +41,7 @@ try {
     $sources+='backend/src/test/java/dev/interviewcoach/identity/KnowledgeMaintenanceIT.java'
     $sources+=@('backend/src/test/java/dev/interviewcoach/knowledge/AliyunEmbeddingGatewayTest.java','.env.example','backend/src/main/resources/application.yml','backend/src/main/resources/application-local.yml')
     $sources+=@('backend/src/test/java/dev/interviewcoach/knowledge/JdkHttpTransportPolicyTest.java','backend/src/test/java/dev/interviewcoach/identity/Http2IndexFixture.java','scripts/Verify-P3IndexHttp2.mjs','backend/pom.xml','backend/Dockerfile')
+    $sources+='backend/src/main/resources/db/migration/V9__publish_knowledge_collections.sql'
     $hashes=@{}; foreach ($source in $sources) { $hashes[$source]=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash }
     $manifest=@{ database=$testDatabase; container=$testDatabase; containerId=$containerIdentity; volume=$testVolume; port=$databasePort; imageId=$imageIdentity; head=(git rev-parse HEAD); createdAt=[DateTimeOffset]::Now.ToString('o'); status='running'; sourceSha256=$hashes; log=$logPath }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding UTF8

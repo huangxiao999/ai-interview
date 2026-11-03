@@ -46,7 +46,7 @@ class KnowledgeMaintenanceIT {
         var history = jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' ORDER BY installed_rank");
         var current = Flyway.configure().dataSource(url, System.getenv("DB_USERNAME"), System.getenv("DB_PASSWORD"))
                 .schemas("app").defaultSchema("app").load();
-        assertThat(current.migrate().migrationsExecuted).isEqualTo(2);
+        assertThat(current.migrate().migrationsExecuted).isEqualTo(3);
         assertThat(current.migrate().migrationsExecuted).isZero();
         current.validate();
         assertThat(jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' AND version IN ('1','2','3','4','5','6') ORDER BY installed_rank"))
@@ -55,7 +55,9 @@ class KnowledgeMaintenanceIT {
         other = account(AccountAuthority.KNOWLEDGE_MAINTAINER);
         user = account(AccountAuthority.TRIAL_USER);
         context = new SpringApplicationBuilder(InterviewCoachApplication.class).profiles("local")
-                .run("--server.port=0", "--material.private-root=" + Path.of("../.cache", database, "private").toAbsolutePath().normalize());
+                .run("--server.port=0", "--BAILIAN_EMBEDDING_ENABLED=false", "--material.private-root=" + Path.of("../.cache", database, "private").toAbsolutePath().normalize());
+        assertThat(context.getBean(JdbcTemplate.class).queryForObject("SHOW search_path",String.class)).contains("app").doesNotContain("public");
+        assertThat(context.getBean(Flyway.class).getConfiguration().getDataSource()).isNotSameAs(context.getBean(javax.sql.DataSource.class));
         base = URI.create("http://127.0.0.1:" + context.getEnvironment().getRequiredProperty("local.server.port"));
     }
 

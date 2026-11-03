@@ -46,11 +46,11 @@ public final class KnowledgeIndexService {
                 if(!previous.get().kind().equals("CREATE") || !previous.get().digest().equals(input)) throw new KnowledgeConflict();
                 return detail(repository.findBuild(previous.get().build()).orElseThrow(KnowledgeUnavailable::new));
             }
-            if(knowledge.findOperation(actor.accountId(),operation).isPresent()) throw new KnowledgeConflict();
+            if(knowledge.findOperation(actor.accountId(),operation).isPresent() || knowledge.reservedIndexOperation(actor.accountId(),operation)) throw new KnowledgeConflict();
             knowledge.lockRoot(root);
             var source=knowledge.findVersion(root,version).orElseThrow(KnowledgeUnavailable::new);
             if(!source.digest().equals(digest)) throw new KnowledgeConflict();
-            if(!"APPROVE".equals(source.decision())) throw new KnowledgeStateConflict();
+            if(knowledge.findApproved(version).isEmpty()) throw new KnowledgeStateConflict();
             String config=configuration();
             var existing=repository.findBinding(version,KnowledgeIndexPolicy.hash(config));
             if(existing.isPresent()) {
@@ -79,7 +79,7 @@ public final class KnowledgeIndexService {
                 if(!old.get().kind().equals("RESUME") || !old.get().digest().equals(input)) throw new KnowledgeConflict();
                 return detail(repository.findBuild(old.get().build()).orElseThrow());
             }
-            if(knowledge.findOperation(actor.accountId(),operation).isPresent()) throw new KnowledgeConflict();
+            if(knowledge.findOperation(actor.accountId(),operation).isPresent() || knowledge.reservedIndexOperation(actor.accountId(),operation)) throw new KnowledgeConflict();
             var build=repository.findBuild(buildId).orElseThrow();
             if(!qualified(build)) throw new KnowledgeStateConflict();
             if(!build.state().equals("WAITING_MANUAL")) throw new KnowledgeStateConflict();
