@@ -1,0 +1,6 @@
+# Ship only the static build and server config; never frontend environment files.
+**
+!Dockerfile
+!nginx.conf
+!dist/
+!dist/**
