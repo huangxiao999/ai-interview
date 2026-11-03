@@ -157,6 +157,7 @@ public final class KnowledgeIndexService {
         }
         // execute返回即已成功提交；若提交抛错，本方法退出，绝不据内存的尝试意图派发。
         if(dispatch==null) return;
+        EmbeddingGateway.Receipt observed = EmbeddingGateway.Receipt.UNKNOWN;
         try {
             boolean valid=Boolean.TRUE.equals(transaction.execute(status->{
                 var actor=accounts.lockCurrentAccount(dispatch.build().owner()); knowledge.lockRoot(dispatch.build().root());
@@ -168,15 +169,22 @@ public final class KnowledgeIndexService {
             if(!valid) return;
             var chunks=chunks(dispatch.batch());
             var response=gateway.embed(chunks.stream().map(KnowledgeIndexPolicy.Chunk::text).toList(),dispatch.deadline().toInstant());
+            var receipt=response==null ? EmbeddingGateway.Receipt.UNKNOWN
+                    :new EmbeddingGateway.Receipt(response.requestId(),response.usageTokens());
+            observed=receipt;
             validate(response,chunks.size());
             transaction.executeWithoutResult(status->{
                 var actor=accounts.lockCurrentAccount(dispatch.build().owner());knowledge.lockRoot(dispatch.build().root());
+                // 迟到/失效响应只允许记原尝试的无正文回执；接收资格仍独立重查，不能复活业务结果。
+                repository.receipt(dispatch.batch().attempt(),receipt);
                 if(!actor.hasAuthority(AccountAuthority.KNOWLEDGE_MAINTAINER) || !qualified(dispatch.build())) repository.invalidate(dispatch.build(),dispatch.batch());
-                else if(active(dispatch)) repository.candidate(dispatch.build(),dispatch.batch(),mapper.writeValueAsString(response),response);
+                else if(active(dispatch)) repository.candidate(dispatch.build(),dispatch.batch(),mapper.writeValueAsString(response));
             });
         } catch(IndexExternalFailure failure) {
+            var receipt=failure.receipt.hasFacts() ? failure.receipt : observed;
             transaction.executeWithoutResult(status->{
                 accounts.lockCurrentAccount(dispatch.build().owner());knowledge.lockRoot(dispatch.build().root());
+                repository.receipt(dispatch.batch().attempt(),receipt);
                 if(active(dispatch)) repository.failed(dispatch.build(),dispatch.batch(),failure.category,
                         failure.category.equals("EXTERNAL_UNKNOWN") || failure.category.equals("DEADLINE"));
             });

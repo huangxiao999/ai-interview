@@ -4,6 +4,7 @@ import com.sun.net.httpserver.HttpServer;
 import dev.interviewcoach.InterviewCoachApplication;
 import dev.interviewcoach.knowledge.AliyunEmbeddingGateway;
 import dev.interviewcoach.knowledge.EmbeddingGateway;
+import dev.interviewcoach.knowledge.JdkHttpTransportPolicy;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.net.*;
@@ -56,6 +57,7 @@ class KnowledgeIndexIT {
     static URI base;
     static String database;
     static String mockUrl;
+    static Http2IndexFixture http2;
     static Account maintainer,other,user;
 
     @BeforeAll static void start() throws Exception {
@@ -77,38 +79,50 @@ class KnowledgeIndexIT {
         supplier.createContext("/embedding",exchange->{
             try {
                 var body=JSON.readTree(exchange.getRequestBody().readAllBytes());
-                assertThat(body.path("model").asText()).isEqualTo("text-embedding-v4");
+                assertThat(body.path("model").asText()).isEqualTo("qwen3.7-text-embedding-flash");
                 assertThat(body.path("parameters").path("dimension").asInt()).isEqualTo(1024);
                 assertThat(body.path("parameters").path("text_type").asText()).isEqualTo("document");
                 var texts=body.path("input").path("texts");
                 String marker=texts.get(0).asText().split("\\s",2)[0];
                 int call=CALLS.merge(marker,1,Integer::sum);
-                if(marker.equals("[DROP]") || marker.equals("[BROWSER]") && call==1) { exchange.close();return; }
+                if(marker.equals("[RATE_LIMIT]")) { exchange.sendResponseHeaders(429,-1);return; }
+                if(marker.equals("[DROP]") || marker.equals("[DROP_RECEIPT]") || marker.equals("[BROWSER]") && call==1) { exchange.close();return; }
                 if(marker.startsWith("[SLOW")) slowRelease.await(15,TimeUnit.SECONDS);
                 var vectors=new ArrayList<Map<String,Object>>();
                 for(int i=0;i<texts.size();i++) {
-                    var vector=new ArrayList<Double>(Collections.nCopies(marker.equals("[BAD_DIM]")?2:1024,0d));
+                    var vector=new ArrayList<Double>(Collections.nCopies(marker.startsWith("[BAD_DIM") || marker.equals("[BAD_USAGE_DIM]") || marker.equals("[BAD_ID_DIM]")?2:1024,0d));
                     if(!marker.equals("[ZERO]")) vector.set(0,marker.equals("[NONFINITE]")?Double.POSITIVE_INFINITY:1d);
-                    vectors.add(Map.of("index",marker.equals("[BAD_MAP]")?i+1:i,"embedding",vector));
+                    vectors.add(Map.of("index",marker.startsWith("[BAD_MAP")?i+1:i,"embedding",vector));
                 }
-                if(marker.equals("[PARTIAL]")) vectors.removeLast();
-                byte[] response=JSON.writeValueAsBytes(Map.of("output",Map.of("embeddings",vectors),"request_id","synthetic-"+UUID.randomUUID(),"usage",Map.of("total_tokens",texts.size()*100)));
-                exchange.getResponseHeaders().set("Content-Type","application/json");exchange.sendResponseHeaders(200,response.length);
+                if(marker.startsWith("[PARTIAL")) vectors.removeLast();
+                var responseBody=new LinkedHashMap<String,Object>();
+                responseBody.put("embeddings",vectors);responseBody.put("request_id",marker.equals("[BAD_ID_DIM]")?"invalid\nrequest":"synthetic-"+UUID.randomUUID());
+                responseBody.put("usage",marker.equals("[UNKNOWN_USAGE]") || marker.equals("[BAD_USAGE_DIM]")?Map.of("prompt_tokens",4,"total_tokens",5)
+                        :Map.of("prompt_tokens",texts.size()*100,"total_tokens",texts.size()*100));
+                byte[] response=marker.equals("[MALFORMED]")?"{invalid".getBytes(StandardCharsets.UTF_8):JSON.writeValueAsBytes(responseBody);
+                exchange.getResponseHeaders().set("Content-Type","application/json");exchange.sendResponseHeaders(marker.equals("[HTTP_RECEIPT]")?429:200,response.length);
                 exchange.getResponseBody().write(response);
             } catch(Exception failure) { /* 仅外部故障端点；客户端观察断开并记录未知。 */ }
             finally { exchange.close(); }
         });
         supplier.start();mockUrl="http://127.0.0.1:"+supplier.getAddress().getPort()+"/embedding";
+        http2=new Http2IndexFixture(database);
         maintainer=account(AccountAuthority.KNOWLEDGE_MAINTAINER);other=account(AccountAuthority.KNOWLEDGE_MAINTAINER);user=account(AccountAuthority.TRIAL_USER);
         startApplication();
     }
 
     static void startApplication() {
+        startApplication(mockUrl,false);
+    }
+    static void startApplication(String endpoint,boolean tls) {
+        var arguments=new ArrayList<>(List.of("--server.port=0","--BAILIAN_EMBEDDING_ENABLED=false","--index-test.endpoint="+endpoint,
+                "--material.private-root="+Path.of("../.cache",database,"private").toAbsolutePath()));
+        if(tls)arguments.add("--index-test.tls-store="+http2.store);
         context=new SpringApplicationBuilder(InterviewCoachApplication.class,ExternalFixture.class).profiles("local")
-                .run("--server.port=0","--index-test.endpoint="+mockUrl,"--material.private-root="+Path.of("../.cache",database,"private").toAbsolutePath());
+                .run(arguments.toArray(String[]::new));
         base=URI.create("http://127.0.0.1:"+context.getEnvironment().getRequiredProperty("local.server.port"));
     }
-    @AfterAll static void close() { if(context!=null) context.close();if(supplier!=null)supplier.stop(0);if(supplierThreads!=null)supplierThreads.shutdownNow(); }
+    @AfterAll static void close() { if(context!=null) context.close();if(supplier!=null)supplier.stop(0);if(supplierThreads!=null)supplierThreads.shutdownNow();if(http2!=null)http2.close(); }
 
     @Test @Order(1) void fixedBatchesIdempotencyAndCompleteVectors() throws Exception {
         Client a=new Client(maintainer);var version=approved(a,"[MULTI] "+"😀".repeat(10_500));UUID op=UUID.randomUUID();
@@ -211,7 +225,7 @@ class KnowledgeIndexIT {
     }
     @Test @Order(9) void unconfiguredProductionGatewayRefusesBeforeDispatch() throws Exception {
         context.close();context=null;
-        try(var unconfigured=new SpringApplicationBuilder(InterviewCoachApplication.class).profiles("local").run("--server.port=0","--material.private-root="+Path.of("../.cache",database,"private"))) {
+        try(var unconfigured=new SpringApplicationBuilder(InterviewCoachApplication.class).profiles("local").run("--server.port=0","--BAILIAN_EMBEDDING_ENABLED=false","--material.private-root="+Path.of("../.cache",database,"private"))) {
             base=URI.create("http://127.0.0.1:"+unconfigured.getEnvironment().getRequiredProperty("local.server.port"));
             Client a=new Client(maintainer);var v=approved(a,"[UNCONFIGURED] source");
             assertThat(json(a.post(path(v),Map.of("digest",v.get("digest")),UUID.randomUUID())).get("code")).isEqualTo("INDEX_SERVICE_UNAVAILABLE");
@@ -352,19 +366,193 @@ class KnowledgeIndexIT {
         assertThat(jdbc.queryForObject("SELECT attempt_count FROM knowledge_index_batch WHERE build_id=?",Integer.class,UUID.fromString(id))).isEqualTo(1);
     }
 
+    @Test @Order(19) void flashUsageAndRequestIdentityArePersistedWithoutSecrets() throws Exception {
+        Client a=new Client(maintainer);UUID operation=UUID.randomUUID();var v=approved(a,"[FLASH_USAGE] source");
+        String id=(String)create(a,v,operation).get("buildId");awaitState(id,"SUCCEEDED");
+        var row=jdbc.queryForMap("SELECT config_json::text,config_digest FROM knowledge_index_build WHERE id=?",UUID.fromString(id));
+        var config=JSON.readTree(row.get("config_json").toString());
+        assertThat(config.path("model").asText()).isEqualTo("qwen3.7-text-embedding-flash");
+        assertThat(config.path("outputType").asText()).isEqualTo("dense");
+        assertThat(config.path("adapterRevision").asText()).isEqualTo("dashscope-native-dense-v2");
+        assertThat(row.get("config_json").toString()).doesNotContain("Bearer", "DASHSCOPE_API_KEY", "synthetic");
+        var usage=jdbc.queryForMap("SELECT provider_request_id,usage_tokens,usage_unknown FROM knowledge_index_attempt a JOIN knowledge_index_batch b ON b.id=a.batch_id WHERE b.build_id=?",UUID.fromString(id));
+        assertThat(usage.get("provider_request_id").toString()).startsWith("synthetic-");
+        assertThat(usage).containsEntry("usage_tokens",100L).containsEntry("usage_unknown",false);
+        assertThat(create(a,v,operation).get("buildId")).isEqualTo(id);
+        assertThat(create(a,v,UUID.randomUUID()).get("buildId")).isEqualTo(id);
+        assertThat(CALLS.get("[FLASH_USAGE]")).isEqualTo(1);
+    }
+
+    @Test @Order(20) void contradictoryUsageStaysUnknownAndDoesNotBecomeZero() throws Exception {
+        Client a=new Client(maintainer);String id=(String)create(a,approved(a,"[UNKNOWN_USAGE] source"),UUID.randomUUID()).get("buildId");
+        awaitState(id,"SUCCEEDED");
+        var usage=jdbc.queryForMap("SELECT usage_tokens,usage_unknown FROM knowledge_index_attempt a JOIN knowledge_index_batch b ON b.id=a.batch_id WHERE b.build_id=?",UUID.fromString(id));
+        assertThat(usage.get("usage_tokens")).isNull();assertThat(usage.get("usage_unknown")).isEqualTo(true);
+        assertThat(CALLS.get("[UNKNOWN_USAGE]")).isEqualTo(1);
+    }
+
+    @Test @Order(21) void rateLimitRequiresEachChargeConfirmationAndNeverResetsBudget() throws Exception {
+        Client a=new Client(maintainer);var v=approved(a,"[RATE_LIMIT] source");UUID operation=UUID.randomUUID();
+        String id=(String)create(a,v,operation).get("buildId");awaitState(id,"WAITING_MANUAL");
+        for(int attempt=1;attempt<=3;attempt++) {
+            assertThat(CALLS.get("[RATE_LIMIT]")).isEqualTo(attempt);
+            assertThat(create(a,v,UUID.randomUUID()).get("buildId")).isEqualTo(id);
+            if(attempt==3) break;
+            assertThat(resume(a,id,false,UUID.randomUUID()).statusCode()).isEqualTo(409);
+            UUID resumeOperation=UUID.randomUUID();var input=resumeInput(id,true);
+            assertThat(a.post(API+"/index-builds/"+id+"/resume",input,resumeOperation).statusCode()).isEqualTo(200);
+            assertThat(a.post(API+"/index-builds/"+id+"/resume",input,resumeOperation).statusCode()).isEqualTo(200);
+            awaitState(id,attempt==2?"FAILED_FINAL":"WAITING_MANUAL");
+        }
+        context.close();startApplication();a=new Client(maintainer);
+        assertThat(resume(a,id,true,UUID.randomUUID()).statusCode()).isEqualTo(409);
+        assertThat(json(a.get(API+"/index-operations/"+operation))).containsEntry("buildId",id).containsEntry("state","FAILED_FINAL");
+        assertThat(CALLS.get("[RATE_LIMIT]")).isEqualTo(3);assertThat(vectorCount(id)).isZero();
+    }
+
+    @Test @Order(22) void legacyV4BindingIsQueriedButNeverReusedOrRedispatchedAsFlash() throws Exception {
+        Client a=new Client(maintainer);
+        // 仅种入明确的历史持久夹具；不冒充本轮曾执行旧供应商，也不修改旧manifest/数据库。
+        for(boolean complete:List.of(true,false)) {
+            String marker=complete?"[LEGACY_COMPLETE]":"[LEGACY_UNKNOWN]";
+            var v=approved(a,marker+" source");UUID build=UUID.randomUUID(),operation=UUID.randomUUID();
+            var legacy=new TreeMap<>(context.getBean(EmbeddingGateway.class).configuration());
+            legacy.put("model","text-embedding-v4");legacy.remove("outputType");legacy.remove("adapterRevision");
+            String config=JSON.writeValueAsString(legacy),input=v.get("documentId")+":"+v.get("versionId")+":"+v.get("digest");
+            jdbc.update("INSERT INTO knowledge_index_build(id,document_id,version_id,owner_id,version_digest,config_digest,config_json,policy,state) VALUES(?,?,?,?,?,?,?::jsonb,?,?)",
+                    build,UUID.fromString(v.get("documentId").toString()),UUID.fromString(v.get("versionId").toString()),maintainer.id(),v.get("digest"),sha(config),config,"paragraph-1000cp-batch10-no-overlap-v1",complete?"SUCCEEDED":"WAITING_MANUAL");
+            jdbc.update("INSERT INTO knowledge_index_request(actor_id,operation_id,build_id,kind,input_digest) VALUES(?,?,?,'CREATE',?)",maintainer.id(),operation,build,sha(input));
+            UUID batch=UUID.randomUUID(),attempt=UUID.randomUUID();
+            jdbc.update("INSERT INTO knowledge_index_batch(id,build_id,ordinal,input_json,input_digest,state,attempt_count,generation,current_attempt) VALUES(?,?,0,'[]',?,?,1,1,?)",batch,build,sha("[]"),complete?"ACCEPTED":"WAITING_MANUAL",attempt);
+            jdbc.update("INSERT INTO knowledge_index_attempt(id,batch_id,attempt_no,generation,executor_id,state,started_at,deadline,usage_unknown) VALUES(?,?,1,1,?,?,clock_timestamp(),clock_timestamp()+interval '60 seconds',true)",attempt,batch,UUID.randomUUID(),complete?"ACCEPTED":"EXTERNAL_UNKNOWN");
+            if(complete) {
+                Double[] vector=new Double[1024];Arrays.fill(vector,0d);vector[0]=0.25;
+                jdbc.update("INSERT INTO knowledge_index_vector(batch_id,chunk_id,ordinal,start_offset,end_offset,body,digest,embedding) VALUES(?,?,0,0,1,'x',?,?)",batch,UUID.randomUUID(),sha("x"),vector);
+            }
+            var original=jdbc.queryForMap("SELECT * FROM knowledge_index_build WHERE id=?",build);
+            assertThat(create(a,v,operation).get("buildId")).isEqualTo(build.toString());
+            if(!complete) assertThat(resume(a,build.toString(),true,UUID.randomUUID()).statusCode()).isEqualTo(503);
+            String fresh=(String)create(a,v,UUID.randomUUID()).get("buildId");assertThat(fresh).isNotEqualTo(build.toString());awaitState(fresh,"SUCCEEDED");
+            assertThat(create(a,v,UUID.randomUUID()).get("buildId")).isEqualTo(fresh);
+            assertThat(jdbc.queryForMap("SELECT * FROM knowledge_index_build WHERE id=?",build)).isEqualTo(original);
+            assertThat(jdbc.queryForObject("SELECT attempt_count FROM knowledge_index_batch WHERE id=?",Integer.class,batch)).isEqualTo(1);
+            assertThat(vectorCount(build.toString())).isEqualTo(complete?1:0);
+            if(complete) assertThat(jdbc.queryForObject("SELECT embedding[1] FROM knowledge_index_vector WHERE batch_id=?",Double.class,batch)).isEqualTo(0.25);
+            assertThat(CALLS.get(marker)).isEqualTo(1);
+        }
+    }
+
+    static String sha(String text) throws Exception {
+        return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test @Order(23) void refusedHttp2StreamCannotHideASecondPostInsideOneAttempt() throws Exception {
+        http2.defaultJdkControl();
+        context.close();
+        try {
+            startApplication(http2.endpoint.toString(),true);Client a=new Client(maintainer);
+            String id=(String)create(a,approved(a,"[H2_REFUSED] source"),UUID.randomUUID()).get("buildId");
+            awaitState(id,"WAITING_MANUAL");
+            for(int attempt=1;attempt<=3;attempt++) {
+                assertThat(http2.calls("[H2_REFUSED]")).isEqualTo(attempt);
+                assertThat(jdbc.queryForObject("SELECT attempt_count FROM knowledge_index_batch WHERE build_id=?",Integer.class,UUID.fromString(id))).isEqualTo(attempt);
+                if(attempt==3)break;
+                assertThat(resume(a,id,false,UUID.randomUUID()).statusCode()).isEqualTo(409);
+                assertThat(resume(a,id,true,UUID.randomUUID()).statusCode()).isEqualTo(200);
+                awaitState(id,attempt==2?"FAILED_FINAL":"WAITING_MANUAL");
+            }
+            assertThat(vectorCount(id)).isZero();assertThat(resume(a,id,true,UUID.randomUUID()).statusCode()).isEqualTo(409);
+            assertThat(http2.calls("[H2_REFUSED]")).isEqualTo(3);
+            String bad=(String)create(a,approved(a,"[H2_BAD_DIM] source"),UUID.randomUUID()).get("buildId");awaitState(bad,"WAITING_MANUAL");
+            var receipt=attemptReceipt(bad);
+            assertThat(receipt).containsEntry("provider_request_id","synthetic-h2-1").containsEntry("usage_tokens",100L).containsEntry("usage_unknown",false);
+            assertThat(http2.calls("[H2_BAD_DIM]")).isEqualTo(1);assertThat(vectorCount(bad)).isZero();
+        } finally { context.close();startApplication(); }
+    }
+
+    @Test @Order(24) void rejectedCandidatesKeepOnlyIndependentlyValidReceiptFacts() throws Exception {
+        Client a=new Client(maintainer);
+        for(String marker:List.of("[BAD_DIM_META]","[BAD_MAP_META]","[PARTIAL_META]","[BAD_USAGE_DIM]","[BAD_ID_DIM]","[HTTP_RECEIPT]","[MALFORMED]","[DROP_RECEIPT]")) {
+            String id=(String)create(a,approved(a,marker+" source"),UUID.randomUUID()).get("buildId");awaitState(id,"WAITING_MANUAL");
+            var receipt=attemptReceipt(id);
+            boolean idKnown=!List.of("[BAD_ID_DIM]","[MALFORMED]","[DROP_RECEIPT]").contains(marker);
+            boolean tokensKnown=!List.of("[BAD_USAGE_DIM]","[MALFORMED]","[DROP_RECEIPT]").contains(marker);
+            if(idKnown)assertThat(receipt.get("provider_request_id").toString()).startsWith("synthetic-");
+            else assertThat(receipt.get("provider_request_id")).isNull();
+            assertThat(receipt.get("usage_tokens")).isEqualTo(tokensKnown?100L:null);
+            assertThat(receipt.get("usage_unknown")).isEqualTo(!tokensKnown);
+            assertThat(vectorCount(id)).isZero();assertThat(CALLS.get(marker)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM knowledge_index_candidate c JOIN knowledge_index_attempt a ON a.id=c.attempt_id JOIN knowledge_index_batch b ON b.id=a.batch_id WHERE b.build_id=?",Integer.class,UUID.fromString(id))).isZero();
+        }
+    }
+
+    @Test @Order(25) void lateResponseRecordsOriginalReceiptWithoutRevivingCandidateOrState() throws Exception {
+        slowRelease=new CountDownLatch(1);Client a=new Client(maintainer);
+        String id=(String)create(a,approved(a,"[SLOW_RECEIPT] source"),UUID.randomUUID()).get("buildId");
+        await(()->CALLS.getOrDefault("[SLOW_RECEIPT]",0)==1);
+        UUID original=jdbc.queryForObject("SELECT current_attempt FROM knowledge_index_batch WHERE build_id=?",UUID.class,UUID.fromString(id));
+        jdbc.update("UPDATE knowledge_index_attempt SET deadline=started_at+interval '1 millisecond' WHERE id=?",original);
+        slowRelease.countDown();awaitState(id,"WAITING_MANUAL");
+        var receipt=attemptReceipt(id);
+        assertThat(receipt.get("provider_request_id").toString()).startsWith("synthetic-");
+        assertThat(receipt).containsEntry("usage_tokens",100L).containsEntry("usage_unknown",false);
+        assertThat(vectorCount(id)).isZero();assertThat(CALLS.get("[SLOW_RECEIPT]")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT state FROM knowledge_index_attempt WHERE id=?",String.class,original)).isEqualTo("EXTERNAL_UNKNOWN");
+        assertThat(resume(a,id,true,UUID.randomUUID()).statusCode()).isEqualTo(200);awaitState(id,"SUCCEEDED");
+        assertThat(CALLS.get("[SLOW_RECEIPT]")).isEqualTo(2);assertThat(vectorCount(id)).isEqualTo(1);
+        assertThat(jdbc.queryForMap("SELECT provider_request_id,usage_tokens,usage_unknown FROM knowledge_index_attempt WHERE id=?",original)).isEqualTo(receipt);
+        assertThat(jdbc.queryForObject("SELECT state FROM knowledge_index_attempt WHERE id=?",String.class,original)).isEqualTo("EXTERNAL_UNKNOWN");
+    }
+
+    @Test @Order(26) void oldV4StoredCandidateSurvivesRestartAndKeepsItsOwnBinding() throws Exception {
+        Client a=new Client(maintainer);String body="[LEGACY_CANDIDATE] source";var v=approved(a,body);
+        UUID build=UUID.randomUUID(),batch=UUID.randomUUID(),attempt=UUID.randomUUID(),operation=UUID.randomUUID();
+        var legacy=new TreeMap<>(context.getBean(EmbeddingGateway.class).configuration());legacy.put("model","text-embedding-v4");legacy.remove("outputType");legacy.remove("adapterRevision");
+        String config=JSON.writeValueAsString(legacy);
+        jdbc.update("INSERT INTO knowledge_index_build(id,document_id,version_id,owner_id,version_digest,config_digest,config_json,policy,state,error_category) VALUES(?,?,?,?,?,?,?::jsonb,?,'WAITING_MANUAL','ACCEPTANCE_UNKNOWN')",build,
+                UUID.fromString(v.get("documentId").toString()),UUID.fromString(v.get("versionId").toString()),maintainer.id(),v.get("digest"),sha(config),config,"paragraph-1000cp-batch10-no-overlap-v1");
+        var chunk=new LinkedHashMap<String,Object>();chunk.put("id",UUID.randomUUID());chunk.put("ordinal",0);chunk.put("startOffset",0);chunk.put("endOffset",body.length());chunk.put("text",body);chunk.put("digest",sha(body));
+        String input=JSON.writeValueAsString(List.of(chunk));
+        jdbc.update("INSERT INTO knowledge_index_batch(id,build_id,ordinal,input_json,input_digest,state,attempt_count,generation,current_attempt) VALUES(?,?,0,?::jsonb,?,'CANDIDATE_READY',1,1,?)",batch,build,input,sha(input),attempt);
+        jdbc.update("INSERT INTO knowledge_index_attempt(id,batch_id,attempt_no,generation,executor_id,state,started_at,deadline,provider_request_id,usage_tokens,usage_unknown) VALUES(?,?,1,1,?,'RESPONSE_STORED',clock_timestamp(),clock_timestamp()+interval '60 seconds','synthetic-legacy',17,false)",attempt,batch,UUID.randomUUID());
+        var vector=new ArrayList<Double>(Collections.nCopies(1024,0d));vector.set(0,0.5);
+        jdbc.update("INSERT INTO knowledge_index_candidate(attempt_id,payload) VALUES(?,?::jsonb)",attempt,JSON.writeValueAsString(Map.of("vectors",List.of(vector),"requestId","synthetic-legacy","usageTokens",17)));
+        jdbc.update("INSERT INTO knowledge_index_request(actor_id,operation_id,build_id,kind,input_digest) VALUES(?,?,?,'CREATE',?)",maintainer.id(),operation,build,sha(v.get("documentId")+":"+v.get("versionId")+":"+v.get("digest")));
+        String stored=jdbc.queryForObject("SELECT payload::text FROM knowledge_index_candidate WHERE attempt_id=?",String.class,attempt);
+        context.close();startApplication();awaitState(build.toString(),"SUCCEEDED");a=new Client(maintainer);
+        assertThat(CALLS.getOrDefault("[LEGACY_CANDIDATE]",0)).isZero();
+        assertThat(jdbc.queryForObject("SELECT embedding[1] FROM knowledge_index_vector WHERE batch_id=?",Double.class,batch)).isEqualTo(0.5);
+        assertThat(jdbc.queryForObject("SELECT payload::text FROM knowledge_index_candidate WHERE attempt_id=?",String.class,attempt)).isEqualTo(stored);
+        assertThat(create(a,v,operation).get("buildId")).isEqualTo(build.toString());
+        String fresh=(String)create(a,v,UUID.randomUUID()).get("buildId");assertThat(fresh).isNotEqualTo(build.toString());awaitState(fresh,"SUCCEEDED");
+        assertThat(CALLS.get("[LEGACY_CANDIDATE]")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT config_json->>'model' FROM knowledge_index_build WHERE id=?",String.class,build)).isEqualTo("text-embedding-v4");
+        assertThat(jdbc.queryForObject("SELECT attempt_count FROM knowledge_index_batch WHERE id=?",Integer.class,batch)).isEqualTo(1);
+    }
+
+    static Map<String,Object> attemptReceipt(String build) {
+        return jdbc.queryForMap("SELECT provider_request_id,usage_tokens,usage_unknown FROM knowledge_index_attempt a JOIN knowledge_index_batch b ON b.current_attempt=a.id WHERE b.build_id=?",UUID.fromString(build));
+    }
+
     static Process child() throws Exception {
         int port;try(var socket=new ServerSocket(0)){port=socket.getLocalPort();}base=URI.create("http://127.0.0.1:"+port);
-        var pb=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin/java.exe").toString(),"-cp",System.getProperty("java.class.path"),WorkerProcess.class.getName(),Integer.toString(port),mockUrl,database);
+        var command=new ArrayList<String>();command.add(Path.of(System.getProperty("java.home"),"bin/java.exe").toString());command.addAll(JdkHttpTransportPolicy.jvmArguments());
+        command.addAll(List.of("-cp",System.getProperty("java.class.path"),WorkerProcess.class.getName(),Integer.toString(port),mockUrl,database));
+        var pb=new ProcessBuilder(command);
         pb.redirectErrorStream(true).redirectOutput(Path.of("../.cache",database+"-child-"+UUID.randomUUID()+".log").toFile());var process=pb.start();
         try { await(()->healthy(base.resolve("/api/auth/csrf")));return process; }
         catch(Exception|Error ex){process.destroyForcibly();process.waitFor(10,TimeUnit.SECONDS);throw ex;}
     }
     public static class WorkerProcess {
-        public static void main(String[] args) { new SpringApplicationBuilder(InterviewCoachApplication.class,ExternalFixture.class).profiles("local").run("--server.port="+args[0],"--index-test.endpoint="+args[1],"--material.private-root="+Path.of("../.cache",args[2],"private")); }
+        public static void main(String[] args) { new SpringApplicationBuilder(InterviewCoachApplication.class,ExternalFixture.class).profiles("local").run("--server.port="+args[0],"--BAILIAN_EMBEDDING_ENABLED=false","--index-test.endpoint="+args[1],"--material.private-root="+Path.of("../.cache",args[2],"private")); }
     }
     @TestConfiguration(proxyBeanMethods=false)
     public static class ExternalFixture {
-        @Bean @Primary EmbeddingGateway testExternalGateway(Environment env,ObjectMapper mapper) { return new AliyunEmbeddingGateway(URI.create(env.getRequiredProperty("index-test.endpoint")),"synthetic","fixture","fixture",mapper); }
+        @Bean @Primary EmbeddingGateway testExternalGateway(Environment env,ObjectMapper mapper) throws Exception {
+            String store=env.getProperty("index-test.tls-store");
+            return new AliyunEmbeddingGateway(URI.create(env.getRequiredProperty("index-test.endpoint")),"synthetic","fixture","fixture",mapper,
+                    store==null?null:Http2IndexFixture.trust(Path.of(store)));
+        }
         @Bean @Primary DataSource faultBoundaryDataSource() {
             var real=new DriverManagerDataSource(System.getenv("DB_URL")+"?currentSchema=app",System.getenv("DB_USERNAME"),System.getenv("DB_PASSWORD"));
             return new DelegatingDataSource(real) {

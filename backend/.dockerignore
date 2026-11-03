@@ -1,0 +1,5 @@
+# Allow only the packaged application; no sources, .env, logs or evidence.
+**
+!Dockerfile
+!target/
+!target/interview-coach-backend-0.0.1-SNAPSHOT.jar

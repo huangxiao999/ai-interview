@@ -78,10 +78,15 @@ class KnowledgeIndexRepository {
     Optional<String> findCandidate(UUID attempt) {
         return jdbc.query("SELECT payload::text FROM knowledge_index_candidate WHERE attempt_id=?", (r,n)->r.getString(1), attempt).stream().findFirst();
     }
-    void candidate(Build b, Batch batch, String payload, EmbeddingGateway.Response response) {
+    /** 账号→知识根锁内追加原尝试的无正文回执；不改变资格、状态、代次或已知事实。 */
+    void receipt(UUID attempt, EmbeddingGateway.Receipt receipt) {
+        if (!receipt.hasFacts()) return;
+        jdbc.update("UPDATE knowledge_index_attempt SET provider_request_id=COALESCE(provider_request_id,?),usage_tokens=COALESCE(usage_tokens,?),usage_unknown=(COALESCE(usage_tokens,?) IS NULL) WHERE id=?",
+                receipt.requestId(), receipt.usageTokens(), receipt.usageTokens(), attempt);
+    }
+    void candidate(Build b, Batch batch, String payload) {
         jdbc.update("INSERT INTO knowledge_index_candidate(attempt_id,payload) VALUES(?,?::jsonb)", batch.attempt(), payload);
-        jdbc.update("UPDATE knowledge_index_attempt SET state='RESPONSE_STORED',provider_request_id=?,usage_tokens=?,usage_unknown=?,finished_at=clock_timestamp() WHERE id=?",
-                response.requestId(), response.usageTokens(), response.usageTokens()==null, batch.attempt());
+        jdbc.update("UPDATE knowledge_index_attempt SET state='RESPONSE_STORED',finished_at=clock_timestamp() WHERE id=?", batch.attempt());
         state(b.id(), batch.id(), "CANDIDATE_READY", null);
     }
     void failed(Build b, Batch batch, String category, boolean externalUnknown) {
