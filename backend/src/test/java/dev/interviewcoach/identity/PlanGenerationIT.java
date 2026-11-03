@@ -40,6 +40,8 @@ class PlanGenerationIT {
     static final AtomicInteger QUERIES=new AtomicInteger(),GENERATIONS=new AtomicInteger();
     static final AtomicBoolean PAUSE_READ_FAIL=new AtomicBoolean();
     static final AtomicBoolean RECEIPT_ROLLBACK=new AtomicBoolean();
+    static final AtomicBoolean EVIDENCE_ROLLBACK=new AtomicBoolean(),EVIDENCE_COMMIT_LOSS=new AtomicBoolean();
+    static final AtomicInteger EVIDENCE_FAILURES=new AtomicInteger();
     static final AtomicInteger PAUSE_READS=new AtomicInteger();
     static final List<Map<String,Object>> HTTP_EVENTS=new CopyOnWriteArrayList<>();
     static volatile CountDownLatch entered=new CountDownLatch(0),release=new CountDownLatch(0);
@@ -102,7 +104,7 @@ class PlanGenerationIT {
     @AfterAll static void close() throws Exception {release.countDown();if(context!=null)context.close();if(supplier!=null)supplier.stop(0);if(supplierThreads!=null)supplierThreads.shutdownNow();
         if(database!=null)java.nio.file.Files.writeString(Path.of("../.cache",database+"-facts.json"),JSON.writeValueAsString(Map.of("httpEvents",HTTP_EVENTS,"queryRequests",QUERIES.get(),"generationRequests",GENERATIONS.get(),"workspaces",jdbc.queryForList("SELECT id,operation_id,state,reason,generation,initial_used,auto_used,manual_used,query_used,resume_seq,input IS NULL AS input_purged,query_vector IS NULL AS vector_purged,evidence IS NULL AS evidence_purged,prompt IS NULL AS prompt_purged FROM plan_workspace ORDER BY created_at"),"attempts",jdbc.queryForList("SELECT id,workspace_id,kind,ordinal,category,state,request_id,input_tokens,output_tokens,cost_unknown FROM plan_external_attempt ORDER BY created_at"),"cleanup",jdbc.queryForList("SELECT target_id,state FROM material_cleanup_item WHERE target_type='PLAN_PRIVATE_GRAPH' ORDER BY target_id"))));
     }
-    @AfterEach void reset(){MODE.set("NORMAL");COMMIT_LOSS.set("");PAUSE_READ_FAIL.set(false);RECEIPT_ROLLBACK.set(false);release.countDown();}
+    @AfterEach void reset(){MODE.set("NORMAL");COMMIT_LOSS.set("");PAUSE_READ_FAIL.set(false);RECEIPT_ROLLBACK.set(false);EVIDENCE_ROLLBACK.set(false);EVIDENCE_COMMIT_LOSS.set(false);release.countDown();}
 
     @Test @Order(1) void defaultPlanUsesProductionOwnersAndReplaysOriginalResult() throws Exception {
         Client c=new Client(owner);var m=material(c);UUID creation=UUID.randomUUID();var input=input(m);
@@ -445,6 +447,72 @@ class PlanGenerationIT {
     static JsonNode ok(HttpResponse<String> response,int expected){assertThat(response.statusCode()).withFailMessage(response.body()).isEqualTo(expected);return JSON.readTree(response.body());}
     static void awaitState(Client c,UUID op,String state) throws Exception {long end=System.nanoTime()+TimeUnit.SECONDS.toNanos(15);String last="";while(System.nanoTime()<end){last=operation(c,op).path("state").asString();if(last.equals(state))return;Thread.sleep(50);}throw new AssertionError("Expected "+state+", actual "+last);}
     static void await(BooleanSupplier condition) throws Exception {long end=System.nanoTime()+TimeUnit.SECONDS.toNanos(15);while(System.nanoTime()<end){if(condition.getAsBoolean())return;Thread.sleep(50);}throw new AssertionError("Persistent condition not met");}
+    @Test @Order(34) void evidenceRollbackPausesAndRecoversWithoutRestart() throws Exception {evidenceRecovery(false);}
+    @Test @Order(35) void evidenceCommitLossPausesAndRecoversWithoutRestart() throws Exception {evidenceRecovery(true);}
+    void evidenceRecovery(boolean committed) throws Exception {
+        Client c=new Client(owner);var w=create(c);UUID workspace=id(w,"workspaceId"),op=UUID.randomUUID();int queries=QUERIES.get(),generations=GENERATIONS.get(),failures=EVIDENCE_FAILURES.get();var application=context;
+        if(committed)EVIDENCE_COMMIT_LOSS.set(true);else EVIDENCE_ROLLBACK.set(true);
+        generate(c,w,op);awaitState(c,op,"PAUSED_LOCAL");
+        assertThat(EVIDENCE_FAILURES.get()-failures).isEqualTo(1);assertThat(context).isSameAs(application);
+        assertThat(jdbc.queryForObject("SELECT evidence IS NOT NULL FROM plan_workspace WHERE id=?",Boolean.class,workspace)).isEqualTo(committed);
+        var storedVector=jdbc.queryForObject("SELECT query_vector::text FROM plan_workspace WHERE id=?",String.class,workspace);
+        var originalAttempt=jdbc.queryForMap("SELECT id,request_id,input_tokens,cost_unknown FROM plan_external_attempt WHERE workspace_id=? AND kind='QUERY'",workspace);
+        assertThat(storedVector).isNotNull();assertThat(originalAttempt.get("request_id")).isNotNull();assertThat(((Number)originalAttempt.get("input_tokens")).longValue()).isEqualTo(10);assertThat(originalAttempt.get("cost_unknown")).isEqualTo(true);
+        assertThat(operation(c,op).path("queryUsed").asInt()).isEqualTo(1);assertThat(operation(c,op).path("initialUsed").asInt()).isZero();
+        assertThat(QUERIES.get()-queries).isEqualTo(1);assertThat(GENERATIONS.get()).isEqualTo(generations);
+        resume(c,op,"RETRY",false);awaitState(c,op,"SUCCEEDED");assertThat(context).isSameAs(application);
+        var done=operation(c,op);assertThat(done.path("queryUsed").asInt()).isEqualTo(1);assertThat(done.path("initialUsed").asInt()).isEqualTo(1);assertThat(done.path("autoUsed").asInt()).isZero();assertThat(done.path("manualUsed").asInt()).isZero();
+        assertThat(QUERIES.get()-queries).isEqualTo(1);assertThat(GENERATIONS.get()-generations).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT query_vector::text FROM plan_workspace WHERE id=?",String.class,workspace)).isEqualTo(storedVector);
+        assertThat(jdbc.queryForMap("SELECT id,request_id,input_tokens,cost_unknown FROM plan_external_attempt WHERE workspace_id=? AND kind='QUERY'",workspace)).isEqualTo(originalAttempt);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM interview_plan WHERE workspace_id=?",Integer.class,workspace)).isEqualTo(1);
+    }
+    @Test @Order(36) void evidencePauseWriteAndReadFailuresNeverContinueAutomatically() throws Exception {
+        Client c=new Client(owner);var w=create(c);UUID workspace=id(w,"workspaceId"),op=UUID.randomUUID();int queries=QUERIES.get(),generations=GENERATIONS.get(),reads=PAUSE_READS.get();
+        jdbc.execute("CREATE SEQUENCE p4_evidence_pause_calls");
+        jdbc.execute("CREATE FUNCTION p4_evidence_deny_pause() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('p4_evidence_pause_calls'); RAISE EXCEPTION 'isolated evidence pause unavailable'; END $$");
+        jdbc.execute("CREATE TRIGGER p4_evidence_deny_pause BEFORE UPDATE ON plan_workspace FOR EACH ROW WHEN(NEW.id='"+workspace+"'::uuid AND NEW.state='PAUSED_LOCAL') EXECUTE FUNCTION p4_evidence_deny_pause()");
+        try{
+            EVIDENCE_ROLLBACK.set(true);generate(c,w,op);await(()->jdbc.queryForObject("SELECT last_value FROM p4_evidence_pause_calls",Long.class)>=2);
+            PAUSE_READ_FAIL.set(true);await(()->PAUSE_READS.get()>reads);
+            assertThat(jdbc.queryForObject("SELECT state FROM plan_workspace WHERE id=?",String.class,workspace)).isEqualTo("PREPARING_EVIDENCE");
+            assertThat(jdbc.queryForObject("SELECT query_vector IS NOT NULL AND evidence IS NULL FROM plan_workspace WHERE id=?",Boolean.class,workspace)).isTrue();
+            assertThat(QUERIES.get()-queries).isEqualTo(1);assertThat(GENERATIONS.get()).isEqualTo(generations);
+        }finally{jdbc.execute("DROP TRIGGER p4_evidence_deny_pause ON plan_workspace");jdbc.execute("DROP FUNCTION p4_evidence_deny_pause()");jdbc.execute("DROP SEQUENCE p4_evidence_pause_calls");PAUSE_READ_FAIL.set(false);}
+        awaitState(c,op,"PAUSED_LOCAL");assertThat(GENERATIONS.get()).isEqualTo(generations);
+        resume(c,op,"RETRY",false);awaitState(c,op,"SUCCEEDED");assertThat(QUERIES.get()-queries).isEqualTo(1);assertThat(GENERATIONS.get()-generations).isEqualTo(1);
+    }
+    @Test @Order(37) void evidencePauseCommitLossCannotOverwriteManualRecovery() throws Exception {
+        Client c=new Client(owner);var w=create(c);UUID workspace=id(w,"workspaceId"),op=UUID.randomUUID();int queries=QUERIES.get(),generations=GENERATIONS.get(),reads=PAUSE_READS.get();
+        EVIDENCE_COMMIT_LOSS.set(true);COMMIT_LOSS.set("PAUSE");generate(c,w,op);awaitState(c,op,"PAUSED_LOCAL");await(()->PAUSE_READS.get()>reads);
+        try{resume(c,op,"RETRY",false);assertThat(operation(c,op).path("state").asString()).isEqualTo("QUEUED");assertThat(GENERATIONS.get()).isEqualTo(generations);}
+        finally{PAUSE_READ_FAIL.set(false);}
+        awaitState(c,op,"SUCCEEDED");assertThat(QUERIES.get()-queries).isEqualTo(1);assertThat(GENERATIONS.get()-generations).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT resume_seq FROM plan_workspace WHERE id=?",Long.class,workspace)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM interview_plan WHERE workspace_id=?",Integer.class,workspace)).isEqualTo(1);
+    }
+    @Test @Order(38) void deletionWinsAgainstDelayedEvidencePause() throws Exception {
+        Client c=new Client(owner);var m=material(c);var w=ok(c.post("/api/plan-workspaces",input(m),UUID.randomUUID()),201);UUID workspace=id(w,"workspaceId"),op=UUID.randomUUID();int queries=QUERIES.get(),generations=GENERATIONS.get(),reads=PAUSE_READS.get();
+        EVIDENCE_COMMIT_LOSS.set(true);COMMIT_LOSS.set("PAUSE");generate(c,w,op);awaitState(c,op,"PAUSED_LOCAL");await(()->PAUSE_READS.get()>reads);
+        try{ok(c.delete("/api/materials/resumes/"+m.root()),200);assertThat(c.post("/api/plan-operations/"+op+"/resume",Map.of("action","RETRY","acceptUnknownCost",false),UUID.randomUUID()).statusCode()).isEqualTo(404);}
+        finally{PAUSE_READ_FAIL.set(false);}
+        await(()->jdbc.queryForObject("SELECT input IS NULL AND query_vector IS NULL AND evidence IS NULL AND prompt IS NULL FROM plan_workspace WHERE id=?",Boolean.class,workspace));
+        assertThat(jdbc.queryForObject("SELECT state FROM plan_workspace WHERE id=?",String.class,workspace)).isEqualTo("INVALIDATED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM interview_plan WHERE workspace_id=?",Integer.class,workspace)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM plan_generation_candidate WHERE workspace_id=?",Integer.class,workspace)).isZero();
+        assertThat(QUERIES.get()-queries).isEqualTo(1);assertThat(GENERATIONS.get()).isEqualTo(generations);
+    }
+    @Test @Order(39) void stoppedKnowledgeStillBlocksRecoveredEvidence() throws Exception {
+        var keeper=new KnowledgeCollectionIT.Client(maintainer);var temp=KnowledgeCollectionIT.build(keeper,"[P4-SYNTHETIC] stopped evidence recovery source");
+        var published=KnowledgeCollectionIT.ok(keeper.post("/collections",KnowledgeCollectionIT.publication(KnowledgeCollectionIT.currentId(),List.of(KnowledgeCollectionIT.selection(temp,"21","jmm","visible","yes"))),UUID.randomUUID()));
+        Client c=new Client(owner);var in=new HashMap<>(input(material(c)));in.put("collectionId",published.get("collectionId"));in.put("configDigest",published.get("configDigest"));var w=ok(c.post("/api/plan-workspaces",in,UUID.randomUUID()),201);UUID workspace=id(w,"workspaceId"),op=UUID.randomUUID();int queries=QUERIES.get(),generations=GENERATIONS.get();
+        EVIDENCE_ROLLBACK.set(true);generate(c,w,op);awaitState(c,op,"PAUSED_LOCAL");
+        KnowledgeCollectionIT.ok(keeper.post(KnowledgeCollectionIT.versionPath(temp)+"/stop",Map.of("digest",temp.digest(),"reason","Synthetic evidence recovery stop"),UUID.randomUUID()));
+        resume(c,op,"RETRY",false);awaitState(c,op,"BLOCKED_KNOWLEDGE");
+        assertThat(QUERIES.get()-queries).isEqualTo(1);assertThat(GENERATIONS.get()).isEqualTo(generations);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM interview_plan WHERE workspace_id=?",Integer.class,workspace)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM plan_generation_candidate WHERE workspace_id=?",Integer.class,workspace)).isZero();
+    }
     static final class Client {
         final KnowledgeCollectionIT.Client session;
         String token;
@@ -474,9 +542,12 @@ class PlanGenerationIT {
                         if(sql.startsWith("INSERT INTO plan_external_attempt"))stage.set("INTENT");
                         if(sql.startsWith("UPDATE plan_workspace SET state='PAUSED_LOCAL'"))stage.set("PAUSE");
                         if(sql.startsWith("UPDATE plan_external_attempt SET request_id=COALESCE"))stage.set("RECEIPT");
+                        if(sql.startsWith("UPDATE plan_workspace SET evidence="))stage.set("EVIDENCE");
                     }
                     if(method.getName().equals("commit") && stage.get().equals("RECEIPT") && RECEIPT_ROLLBACK.compareAndSet(true,false)){real.rollback();throw new SQLException("Synthetic receipt transaction rollback","08006");}
+                    if(method.getName().equals("commit") && stage.get().equals("EVIDENCE") && EVIDENCE_ROLLBACK.compareAndSet(true,false)){real.rollback();EVIDENCE_FAILURES.incrementAndGet();throw new SQLException("Synthetic evidence transaction rollback","08006");}
                     Object result=method.invoke(real,args);
+                    if(method.getName().equals("commit") && stage.get().equals("EVIDENCE") && EVIDENCE_COMMIT_LOSS.compareAndSet(true,false)){EVIDENCE_FAILURES.incrementAndGet();throw new SQLException("Synthetic evidence actual commit acknowledgment lost","08006");}
                     if(method.getName().equals("commit") && !stage.get().isEmpty() && COMMIT_LOSS.compareAndSet(stage.get(),"")){if(stage.get().equals("PAUSE"))PAUSE_READ_FAIL.set(true);throw new SQLException("Synthetic lost actual commit acknowledgment","08006");}
                     return result;
                 }catch(InvocationTargetException failure){throw failure.getCause();}
