@@ -20,6 +20,7 @@ export interface DeletionImpact {
   planCount: number
   planOperationCount: number
   planCandidateCount: number
+  planRevisionCount: number
 }
 
 export interface DeletionStatus {
@@ -300,7 +301,8 @@ export function deletionImpact(resumeId: string): Promise<DeletionImpact> {
         typeof value.fileCount !== 'number' ||
         typeof value.planCount !== 'number' ||
         typeof value.planOperationCount !== 'number' ||
-        typeof value.planCandidateCount !== 'number'
+        typeof value.planCandidateCount !== 'number' ||
+        typeof value.planRevisionCount !== 'number'
       ) {
         throw new ApiError(null, 'INVALID_RESPONSE', '删除范围响应格式无法识别')
       }
@@ -311,6 +313,7 @@ export function deletionImpact(resumeId: string): Promise<DeletionImpact> {
         planCount: value.planCount,
         planOperationCount: value.planOperationCount,
         planCandidateCount: value.planCandidateCount,
+        planRevisionCount: value.planRevisionCount,
       }
     },
   )

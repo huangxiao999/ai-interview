@@ -43,6 +43,12 @@ class KnowledgeCollectionRepository {
                 +"AND NOT EXISTS(SELECT 1 FROM knowledge_version_stop s WHERE s.version_id=e.version_id) ORDER BY e.technology,e.technology_version,e.scenario,e.claim_key",
                 (r,n)->new PlanEvidenceFacts.Option(collection,digest,r.getString(1),r.getString(2),r.getString(3),r.getString(4)),collection);
     }
+    /** 编辑不发起query或相似度检索，只核原固定集合的人审资格与明确条件。 */
+    List<Entry> revisionCoverage(UUID collection){
+        return jdbc.query("SELECT e.* FROM knowledge_collection_entry e JOIN knowledge_review r ON r.version_id=e.version_id AND r.decision='APPROVE' "
+                +"WHERE e.collection_id=? AND NOT EXISTS(SELECT 1 FROM knowledge_version_stop s WHERE s.version_id=e.version_id) ORDER BY e.technology,e.technology_version,e.scenario,e.claim_key,e.chunk_id",
+                (r,n)->entry(r),collection);
+    }
     Optional<UUID> findCurrent() {
         return Optional.ofNullable(jdbc.queryForObject("SELECT collection_id FROM knowledge_collection_current WHERE singleton=1",UUID.class));
     }

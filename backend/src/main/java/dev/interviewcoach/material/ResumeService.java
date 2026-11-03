@@ -133,11 +133,12 @@ final class ResumeService {
             return new DeletionImpact(repository.countVersions(resumeId), repository.countJdVersions(resumeId),
                     repository.countFiles(resumeId), additional.stream().mapToInt(MaterialDeletionParticipant.Impact::plans).sum(),
                     additional.stream().mapToInt(MaterialDeletionParticipant.Impact::operations).sum(),
-                    additional.stream().mapToInt(MaterialDeletionParticipant.Impact::candidates).sum());
+                    additional.stream().mapToInt(MaterialDeletionParticipant.Impact::candidates).sum(),
+                    additional.stream().mapToInt(MaterialDeletionParticipant.Impact::revisions).sum());
         });
     }
 
-    record DeletionImpact(int versionCount, int jdVersionCount, int fileCount, int planCount, int planOperationCount, int planCandidateCount) {
+    record DeletionImpact(int versionCount, int jdVersionCount, int fileCount, int planCount, int planOperationCount, int planCandidateCount, int planRevisionCount) {
     }
 
     ResumeRepository.Deletion delete(Actor actor, UUID expectedAccountId, UUID resumeId) {

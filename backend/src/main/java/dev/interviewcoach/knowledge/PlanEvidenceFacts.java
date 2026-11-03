@@ -21,6 +21,21 @@ public final class PlanEvidenceFacts {
     public record Evidence(String status,String configDigest,String retrievalPolicy,List<Piece> pieces,boolean runtimeReady){ }
     public record Binding(String configDigest,String policy){ }
     public record Option(UUID collectionId,String configDigest,String technology,String technologyVersion,String scenario,String claimKey){ }
+    public record Coverage(Option binding,String name,List<UUID> evidenceRefs){ }
+    /** 调用者已持账号/资料锁；仅返回原集合无同条件冲突的已审核主题，不猜自由文本语义。 */
+    public List<Coverage> revisionCoverage(UUID collection,String digest){
+        lock(collection,digest);
+        var groups=new java.util.LinkedHashMap<Option,java.util.List<KnowledgeCollectionRepository.Entry>>();
+        for(var e:collections.revisionCoverage(collection)){
+            var key=new Option(collection,digest,e.technology(),e.technologyVersion(),e.scenario(),e.claimKey());
+            groups.computeIfAbsent(key,k->new java.util.ArrayList<>()).add(e);
+        }
+        var result=new java.util.ArrayList<Coverage>();
+        for(var group:groups.entrySet())if(group.getValue().stream().map(KnowledgeCollectionRepository.Entry::claimValue).distinct().count()==1){
+            var k=group.getKey();result.add(new Coverage(k,k.technology()+" "+k.technologyVersion()+" / "+k.scenario()+" / "+k.claimKey(),group.getValue().stream().map(KnowledgeCollectionRepository.Entry::chunkId).toList()));
+        }
+        return List.copyOf(result);
+    }
     public List<Option> options(){
         transaction();var current=collections.findCurrent();
         if(current.isEmpty())return List.of();

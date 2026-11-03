@@ -6,5 +6,5 @@ import java.util.UUID;
 public interface MaterialDeletionParticipant {
     void invalidateAndRegister(UUID owner, UUID root, UUID deletion);
     Impact impact(UUID owner, UUID root);
-    record Impact(int plans, int operations, int candidates) { }
+    record Impact(int plans, int operations, int candidates, int revisions) { }
 }

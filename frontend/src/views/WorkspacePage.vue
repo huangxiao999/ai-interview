@@ -40,6 +40,7 @@ const {
   deletePlanCount,
   deletePlanOperationCount,
   deletePlanCandidateCount,
+  deletePlanRevisionCount,
   pendingVersionSave,
   listState,
 } = storeToRefs(materials)
@@ -279,6 +280,7 @@ async function prepareDelete(resumeId: string): Promise<void> {
     deletePlanCount.value = impact.planCount
     deletePlanOperationCount.value = impact.planOperationCount
     deletePlanCandidateCount.value = impact.planCandidateCount
+    deletePlanRevisionCount.value = impact.planRevisionCount
   } catch (error: unknown) {
     if (generation === materials.generation) showError(error)
   } finally {
@@ -631,11 +633,11 @@ async function retryIdentity(): Promise<void> {
               份原文件/暂存，以及 {{ deletePlanCount }} 份计划、{{
                 deletePlanOperationCount
               }}
-              个生成操作、{{ deletePlanCandidateCount }}
-              份候选和全部关联输入/查询副本。删除受理后立即禁访且无法撤销，在线资料须在24小时内清理。
+              个生成操作、{{ deletePlanCandidateCount }} 份候选、{{ deletePlanRevisionCount }}
+              份计划修订及全部关联输入/查询副本。删除受理后立即禁访且无法撤销，在线资料须在24小时内清理。
             </p>
             <p>
-              范围以服务端核实结果为准；确认前新增的版本也会纳入整份删除。当前尚无计划、面试或报告对象。备份与恢复证明仍待后续任务，不能把在线清理当作备份已清除。
+              范围以服务端核实结果为准；确认前新增的版本也会纳入整份删除。当前尚无面试或报告对象。备份与恢复证明仍待后续任务，不能把在线清理当作备份已清除。
             </p>
             <button
               type="button"
