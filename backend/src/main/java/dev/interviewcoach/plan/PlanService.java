@@ -249,7 +249,9 @@ public final class PlanService implements MaterialDeletionParticipant {
                 try{response=transport.send("QUERY",dispatch.input(),dispatch.deadline().toInstant());}
                 catch(PlanTransport.Failure failure){recordFailure(dispatch,failure);return;}
                 finally{release(reserved);}
-                saveQuery(dispatch,response);w=data.find(id).orElseThrow();
+                // 拒收/失效已是本次query的处理结果；不得继续拿空向量准备或覆盖其失败原因。
+                if(!saveQuery(dispatch,response))return;
+                w=data.find(id).orElseThrow();
             }else release(reserved);
             final var prepared=w;
             boolean evidenceReady=Boolean.TRUE.equals(transaction.execute(status->{data.limitLockWait(prepared.deadline());var c=context(prepared,true);var row=c.work();
@@ -315,21 +317,22 @@ public final class PlanService implements MaterialDeletionParticipant {
         transaction.executeWithoutResult(status->{accounts.lockCurrentAccount(d.work().owner());
             materials.lockRoot(d.work().owner(),d.work().root(),true);data.lock(d.work().id());receipt(d.attempt(),receipt);});
     }
-    private void saveQuery(Dispatch d,PlanTransport.Reply response){
+    private boolean saveQuery(Dispatch d,PlanTransport.Reply response){
         try{
         // 回执登记也是原query的本地接收步骤；失败或提交未知必须进入同一暂停保护。
         auditReceipt(d,response.receipt());
-        transaction.executeWithoutResult(status->{data.limitLockWait(d.deadline());var c=context(d.work(),true);receipt(d.attempt(),response.receipt());var w=c.work();
+        return Boolean.TRUE.equals(transaction.execute(status->{data.limitLockWait(d.deadline());var c=context(d.work(),true);receipt(d.attempt(),response.receipt());var w=c.work();
             if(!c.valid() || !live(w,d.work()) || !data.now().isBefore(d.deadline())){
                 data.write("UPDATE plan_external_attempt SET state='FENCED' WHERE id=?",d.attempt());
-                if(c.valid() && w.generation()==d.work().generation() && !List.of("SUCCEEDED","FAILED_FINAL").contains(w.state()))state(w,"WAITING_MANUAL","LATE_RESPONSE");return;}
+                if(c.valid() && w.generation()==d.work().generation() && !List.of("SUCCEEDED","FAILED_FINAL").contains(w.state()))state(w,"WAITING_MANUAL","LATE_RESPONSE");return false;}
             JsonNode vector=response.content().path("vector");if(!vector.isArray() || vector.size()!=1024)throw new Rejected("INVALID_CANDIDATE","查询向量维度错误");
             var values=mapper.convertValue(vector,new TypeReference<List<Double>>(){});
             // float32非零和有限数值仍由M-06生产向量策略核查，不用测试向量绕过。
             var in=w.input();knowledge.select(in.collectionId(),in.configDigest(),in.technology(),in.technologyVersion(),in.scenario(),in.claimKey(),values);
             data.write("UPDATE plan_workspace SET query_vector=?::jsonb WHERE id=?",mapper.writeValueAsString(values),w.id());
             data.write("UPDATE plan_external_attempt SET state='RESPONSE_STORED' WHERE id=?",d.attempt());
-        });}catch(Rejected | PlanEvidenceFacts.Rejected invalid){recordFailure(d,new PlanTransport.Failure("INVALID_QUERY",response.receipt()));}
+            return true;
+        }));}catch(Rejected | PlanEvidenceFacts.Rejected invalid){recordFailure(d,new PlanTransport.Failure("INVALID_QUERY",response.receipt()));return false;}
         catch(RuntimeException unknown){pause(d.work(),"QUERY");throw unknown;}
     }
     private void saveCandidate(Dispatch d,PlanTransport.Reply response){
