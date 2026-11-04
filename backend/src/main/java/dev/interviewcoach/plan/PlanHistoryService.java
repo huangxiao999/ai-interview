@@ -43,7 +43,7 @@ final class PlanHistoryService {
             args.add(limit+1);
             var rows=jdbc.queryForList("SELECT w.id,w.create_operation_id,w.operation_id,w.resume_id,w.created_at,w.state,w.reason, "
                     +"(w.input->>'resumeVersionId')::uuid AS resume_version_id,(w.input->>'jdVersionId')::uuid AS jd_version_id, "
-                    +"p.id AS plan_id,p.current_revision_id,EXISTS(SELECT 1 FROM plan_revision_confirmation c "
+                    +"p.id AS plan_id,p.current_revision_id,CASE WHEN EXISTS(SELECT 1 FROM plan_controlled_window t WHERE t.workspace_id=w.id) THEN 'CONTROLLED_TRIAL' ELSE 'ENGINEERING_ONLY' END AS eligibility,EXISTS(SELECT 1 FROM plan_revision_confirmation c "
                     +"WHERE c.plan_id=p.id AND c.revision_id=p.current_revision_id) AS confirmed "
                     +"FROM plan_workspace w LEFT JOIN interview_plan p ON p.workspace_id=w.id WHERE "+filter
                     +" ORDER BY w.created_at DESC,w.id DESC LIMIT ?",args.toArray());
@@ -56,7 +56,7 @@ final class PlanHistoryService {
             for(var row:rows){var h=facts.get(row.get("id"));items.add(new Entry((UUID)row.get("id"),(UUID)row.get("create_operation_id"),(UUID)row.get("operation_id"),
                     (UUID)row.get("resume_id"),(UUID)row.get("resume_version_id"),(UUID)row.get("jd_version_id"),h.resumeVersion(),h.jdVersion(),
                     ((java.sql.Timestamp)row.get("created_at")).toInstant().atOffset(java.time.ZoneOffset.UTC),row.get("state").toString(),(String)row.get("reason"),h.current(),
-                    (UUID)row.get("plan_id"),(UUID)row.get("current_revision_id"),(boolean)row.get("confirmed"),"ENGINEERING_ONLY"));}
+                    (UUID)row.get("plan_id"),(UUID)row.get("current_revision_id"),(boolean)row.get("confirmed"),row.get("eligibility").toString()));}
             var last=items.isEmpty()?null:items.getLast();return new Page(List.copyOf(items),more?encode(last.createdAt(),last.workspaceId()):null);
         });
     }

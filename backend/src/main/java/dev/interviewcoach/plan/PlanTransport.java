@@ -8,6 +8,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.springframework.context.annotation.Profile;
@@ -19,15 +20,16 @@ import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
-/** 首片只支持明确隔离的外部HTTP故障适配。普通local/Docker及真实供应商始终不可用，不读取Key。 */
+/** proof保持原隔离边界；真实协议仅交给独立的受控通道，不把proof地址变成生产地址。 */
 @Component @Profile("local")
 final class PlanTransport {
     private final URI endpoint;
     private final ObjectMapper mapper;
     private final String database;
+    private final BailianPlanTransport real;
     private final java.util.concurrent.ScheduledExecutorService deadlines=Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"plan-http-deadline");t.setDaemon(true);return t;});
-    PlanTransport(Environment env,JdbcTemplate jdbc,ObjectMapper mapper){
-        this.mapper=mapper;
+    PlanTransport(Environment env,JdbcTemplate jdbc,ObjectMapper mapper,BailianPlanTransport real){
+        this.mapper=mapper;this.real=real;
         if(!env.getProperty("interview.plan.proof-enabled",Boolean.class,false)){endpoint=null;database=null;return;}
         database=jdbc.queryForObject("SELECT current_database()",String.class);
         String marker=env.getProperty("P4_PLAN_TEST_DATABASE");
@@ -41,14 +43,18 @@ final class PlanTransport {
             throw new IllegalStateException("Plan proof requires a marked new isolated PG16 database and loopback-only supplier; real service remains closed");
         endpoint=uri;
     }
-    boolean available(){return endpoint!=null;}
+    boolean available(){return endpoint!=null || real.enabled();}
+    boolean controlled(){return real.enabled();}
+    String workspace(){return real.workspace();}
+    String wire(String kind,Object input){return real.wire(kind,input);}
     record Receipt(String requestId,Long inputTokens,Long outputTokens){ }
     record Reply(JsonNode content,Receipt receipt){ }
     static final class Failure extends RuntimeException{
         final String category; final Receipt receipt;
         Failure(String category,Receipt receipt){super(category);this.category=category;this.receipt=receipt;}
     }
-    Reply send(String kind,Object input,Instant deadline){
+    Reply send(UUID workspace,UUID attempt,String kind,Object input,Instant deadline){
+        if(real.enabled())return real.send(workspace,attempt,kind,input,deadline);
         if(!available())throw new Failure("SERVICE_UNAVAILABLE",new Receipt(null,null,null));
         Duration remaining=Duration.between(Instant.now(),deadline);
         if(remaining.isNegative() || remaining.isZero())throw new Failure("EXTERNAL_UNKNOWN",new Receipt(null,null,null));

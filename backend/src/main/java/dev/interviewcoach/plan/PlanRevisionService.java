@@ -113,8 +113,8 @@ final class PlanRevisionService {
     private View view(Context c,UUID revision){
         var content=revision(c,revision);UUID plan=(UUID)c.plan().get("id");UUID current=jdbc.queryForObject("SELECT current_revision_id FROM interview_plan WHERE id=?",UUID.class,plan);
         var confirms=jdbc.queryForList("SELECT * FROM plan_revision_confirmation WHERE plan_id=? AND revision_id=?",plan,revision);var fact=confirms.isEmpty()?null:confirms.getFirst();
-        boolean latest=revision.equals(current),edit=latest&&c.materials().current()&&"SUCCEEDED".equals(c.work().state())&&!c.options().isEmpty();
-        return new View(plan,c.work().id(),c.work().root(),current,content,latest,fact!=null,fact==null?null:(UUID)fact.get("id"),fact==null?null:((java.sql.Timestamp)fact.get("confirmed_at")).toInstant().atOffset(java.time.ZoneOffset.UTC),edit,edit&&fact==null&&PlanRevisionPolicy.eligible(content.content(),c.options()),"ENGINEERING_ONLY",c.options());
+        boolean latest=revision.equals(current),edit="ENGINEERING_ONLY".equals(c.plan().get("eligibility"))&&latest&&c.materials().current()&&"SUCCEEDED".equals(c.work().state())&&!c.options().isEmpty();
+        return new View(plan,c.work().id(),c.work().root(),current,content,latest,fact!=null,fact==null?null:(UUID)fact.get("id"),fact==null?null:((java.sql.Timestamp)fact.get("confirmed_at")).toInstant().atOffset(java.time.ZoneOffset.UTC),edit,edit&&fact==null&&PlanRevisionPolicy.eligible(content.content(),c.options()),c.plan().get("eligibility").toString(),c.options());
     }
     private static Rejected conflict(){return new Rejected("OPERATION_CONFLICT","原操作、目标或固定输入不一致");}
     private static Rejected missing(){return new Rejected("RESOURCE_UNAVAILABLE","计划修订或原操作不可访问");}

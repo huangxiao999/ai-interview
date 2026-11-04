@@ -34,17 +34,18 @@ public final class PlanService implements MaterialDeletionParticipant {
     private final ExternalAiPermits permits;
     private final ObjectMapper mapper;
     private final TransactionTemplate transaction;
+    private final ControlledPlanWindow trial;
     private final Map<UUID,Pause> pending=new ConcurrentHashMap<>();
     private boolean recovered;
     PlanService(PlanRepository data,MaterialPlanFacts materials,PlanEvidenceFacts knowledge,AccountWriteGuard accounts,
-                PlanTransport transport,ExternalAiPermits permits,ObjectMapper mapper,PlatformTransactionManager manager){
+                PlanTransport transport,ExternalAiPermits permits,ObjectMapper mapper,PlatformTransactionManager manager,ControlledPlanWindow trial){
         this.data=data;this.materials=materials;this.knowledge=knowledge;this.accounts=accounts;this.transport=transport;
-        this.permits=permits;this.mapper=mapper;transaction=new TransactionTemplate(manager);transaction.setTimeout(5);
+        this.permits=permits;this.mapper=mapper;this.trial=trial;transaction=new TransactionTemplate(manager);transaction.setTimeout(5);
     }
     record Source(UUID versionId,String sourceUrl,String sourceAnchor){ }
     record PlanDetail(UUID planId,UUID revisionId,Draft content,String eligibility,List<Source> sources){ }
     record Preparation(boolean available,String eligibility,List<PlanEvidenceFacts.Option> options){ }
-    Preparation preparation(Actor actor){return transaction.execute(status->{user(actor,actor.accountId());return new Preparation(transport.available(),"ENGINEERING_ONLY",knowledge.options());});}
+    Preparation preparation(Actor actor){return transaction.execute(status->{user(actor,actor.accountId());return new Preparation(transport.available(),transport.controlled()?"CONTROLLED_TRIAL":"ENGINEERING_ONLY",knowledge.options());});}
     record View(UUID workspaceId,UUID createOperationId,UUID operationId,UUID resumeId,UUID resumeVersionId,UUID jdVersionId,String state,String reason,int initialUsed,int autoUsed,int manualUsed,int queryUsed,
                 long generation,OffsetDateTime queuedAt,OffsetDateTime deadlineAt,JsonNode materialReview,
                 List<Map<String,Object>> attempts,PlanDetail plan,String eligibility,boolean materialsCurrent,PlanEvidenceFacts.Option knowledgeBinding,
@@ -83,6 +84,7 @@ public final class PlanService implements MaterialDeletionParticipant {
             if(!"DRAFT".equals(w.state()))conflict();
             if(!transport.available())throw new Rejected("PLAN_SERVICE_UNAVAILABLE","真实计划服务未放行，本次未派发");
             if(!c.valid() || !synthetic(c.facts()))throw new Rejected("PLAN_SERVICE_UNAVAILABLE","工程装配只允许明确标记的合成资料");
+            if(transport.controlled() && !trial.bound(w.id()))throw new Rejected("PLAN_SERVICE_UNAVAILABLE","受控窗口只允许已绑定工作稿");
             if(data.count("SELECT count(*) FROM plan_workspace WHERE resume_id=? AND id<>? AND state NOT IN ('DRAFT','SUCCEEDED','FAILED_FINAL','INVALIDATED')",w.root(),w.id())>0)conflict();
             if(data.findWhere("owner_id=? AND operation_id=?",actor.accountId(),operation).isPresent())conflict();
             data.write("UPDATE plan_workspace SET operation_id=?,state='QUEUED',reason=NULL,queued_at=clock_timestamp() WHERE id=?",operation,w.id());
@@ -104,6 +106,16 @@ public final class PlanService implements MaterialDeletionParticipant {
     View readWorkspace(Actor actor,UUID id){return transaction.execute(status->{user(actor,actor.accountId());return view(owned(actor,id));});}
     View readPlan(Actor actor,UUID id){return transaction.execute(status->{user(actor,actor.accountId());
         return view(data.findWhere("owner_id=? AND id IN(SELECT workspace_id FROM interview_plan WHERE id=?)",actor.accountId(),id).orElseThrow(PlanService::missing));});}
+    record Prepared(String kind,String wireDigest,String wireJson){ }
+    /** 本人受控请求预览，仅用于完整请求Token核计；不在浏览器持久化正文。 */
+    Prepared trialRequest(Actor actor,String kind){return transaction.execute(s->{
+        user(actor,actor.accountId());var w=owned(actor,trial.workspace());var c=context(w,false);w=c.work();
+        if(!transport.controlled() || !c.valid() || !List.of("QUERY","GENERATE").contains(kind))conflict();
+        Object payload;
+        if("QUERY".equals(kind))payload=Map.of("model",QUERY_CONFIG,"query",w.input().technology()+" "+w.input().technologyVersion()+" "+w.input().scenario()+" "+w.input().claimKey(),"dimension",1024);
+        else{if(w.prompt()==null)throw new Rejected("OPERATION_CONFLICT","尚未准备原生成请求");payload=mapper.readTree(w.prompt());}
+        String wire=transport.wire(kind,payload);return new Prepared(kind,hash(wire),wire);
+    });}
 
     View resume(Actor actor,UUID expected,UUID operation,UUID resumeOperation,Resume input){
         if(input==null)throw new Rejected("INVALID_INPUT","请选择核实后的恢复动作");
@@ -152,10 +164,10 @@ public final class PlanService implements MaterialDeletionParticipant {
         var result=data.plan(w.id()).map(p->new PlanDetail((UUID)p.get("id"),(UUID)p.get("revision_id"),
                 mapper.readValue(p.get("payload").toString(),Draft.class),p.get("eligibility").toString(),evidence(w).pieces().stream().map(s->new Source(s.versionId(),s.sourceUrl(),s.sourceAnchor())).toList())).orElse(null);
         boolean hasCandidate=data.candidate(w.id()).isPresent();
-        boolean resumable=facts.current() && configurationReady(w) && List.of("WAITING_MANUAL","PAUSED_LOCAL","BLOCKED_KNOWLEDGE").contains(w.state());
+        boolean resumable=facts.current() && configurationReady(w) && trial.resumable(w.id()) && List.of("WAITING_MANUAL","PAUSED_LOCAL","BLOCKED_KNOWLEDGE").contains(w.state());
         UUID createOperation=data.findCreateOperation(w.id());
         return new View(w.id(),createOperation,w.operation(),w.root(),w.input().resumeVersionId(),w.input().jdVersionId(),w.state(),w.reason(),w.initial(),w.automatic(),w.manual(),w.query(),w.generation(),w.queued(),w.deadline(),
-                materials.review(w.id()),data.attempts(w.id()),result,"ENGINEERING_ONLY",facts.current(),
+                materials.review(w.id()),data.attempts(w.id()),result,trial.eligibility(w.id()),facts.current(),
                 new PlanEvidenceFacts.Option(w.input().collectionId(),w.input().configDigest(),w.input().technology(),w.input().technologyVersion(),w.input().scenario(),w.input().claimKey()),
                 resumable && hasCandidate,resumable && !hasCandidate && (w.initial()==0 || w.manual()<2) && (w.vector()!=null || w.query()<3),
                 List.of("EXTERNAL_UNKNOWN","LATE_RESPONSE").contains(w.reason()==null?"":w.reason()));
@@ -182,11 +194,21 @@ public final class PlanService implements MaterialDeletionParticipant {
         }
         data.lock(original.id());var w=data.find(original.id()).orElseThrow();
         boolean valid=active && actor.hasAuthority(AccountAuthority.TRIAL_USER) && facts!=null && facts.current() && w.input()!=null;
+        if(valid && "CONTROLLED_TRIAL".equals(trial.eligibility(w.id())) && !transport.controlled()){
+            if(!List.of("SUCCEEDED","INVALIDATED","FAILED_FINAL").contains(w.state()))state(w,"PAUSED_LOCAL","CONTROLLED_TRANSPORT_DISABLED");
+            return new Context(data.find(w.id()).orElseThrow(),facts,false);
+        }
         if(valid && !configurationReady(w)){
             // 原操作只能使用首次固定的配置；部署升级不得静默给旧操作换模型、提示词或预算政策。
             if(!List.of("SUCCEEDED","INVALIDATED","FAILED_FINAL").contains(w.state()))state(w,"PAUSED_LOCAL","CONFIGURATION_CHANGED");
             return new Context(data.find(w.id()).orElseThrow(),facts,false);
         }
+        if(valid && transport.controlled()){
+            if(!trial.bound(w.id()))return new Context(w,facts,false);
+            if(!trial.sameCredential(actor)){trial.stop(w.id(),"CREDENTIAL_CHANGED");if(!List.of("SUCCEEDED","INVALIDATED").contains(w.state()))state(w,"INVALIDATED","CREDENTIAL_CHANGED");return new Context(data.find(w.id()).orElseThrow(),facts,false);}
+            knowledge.requireTrialConfiguration(w.input().collectionId(),w.input().configDigest(),transport.workspace());
+        }
+        if(!valid && trial.bound(w.id()))trial.stop(w.id(),"QUALIFICATION_CHANGED");
         if(!valid && !List.of("SUCCEEDED","INVALIDATED").contains(w.state()))
             data.write("UPDATE plan_workspace SET state='INVALIDATED',reason='QUALIFICATION_CHANGED',generation=generation+1 WHERE id=?",w.id());
         return new Context(data.find(w.id()).orElseThrow(),facts,valid);
@@ -246,7 +268,7 @@ public final class PlanService implements MaterialDeletionParticipant {
                 var dispatch=dispatch(w,"QUERY");
                 if(dispatch==null)return;
                 PlanTransport.Reply response;
-                try{response=transport.send("QUERY",dispatch.input(),dispatch.deadline().toInstant());}
+                try{response=transport.send(dispatch.work().id(),dispatch.attempt(),"QUERY",dispatch.input(),dispatch.deadline().toInstant());}
                 catch(PlanTransport.Failure failure){recordFailure(dispatch,failure);return;}
                 finally{release(reserved);}
                 // 拒收/失效已是本次query的处理结果；不得继续拿空向量准备或覆盖其失败原因。
@@ -258,7 +280,7 @@ public final class PlanService implements MaterialDeletionParticipant {
                 if(!c.valid() || !live(row,prepared))return false;
                 var vector=mapper.readValue(row.vector(),new TypeReference<List<Double>>(){});
                 var in=row.input();var proof=knowledge.select(in.collectionId(),in.configDigest(),in.technology(),in.technologyVersion(),in.scenario(),in.claimKey(),vector);
-                if(!"EVIDENCE_AVAILABLE".equals(proof.status()) || proof.pieces().stream().anyMatch(p->!p.body().contains("[P4-SYNTHETIC]"))){state(row,"BLOCKED_KNOWLEDGE",proof.status());return false;}
+                if(!"EVIDENCE_AVAILABLE".equals(proof.status()) || (!transport.controlled() && proof.pieces().stream().anyMatch(p->!p.body().contains("[P4-SYNTHETIC]")))){state(row,"BLOCKED_KNOWLEDGE",proof.status());trial.stop(row.id(),"KNOWLEDGE_NOT_READY");return false;}
                 data.write("UPDATE plan_workspace SET evidence=?::jsonb WHERE id=?",mapper.writeValueAsString(proof),row.id());return true;}));
             if(!evidenceReady)return;
             if(!permits.acquire()){
@@ -267,7 +289,7 @@ public final class PlanService implements MaterialDeletionParticipant {
             reserved.set(true);w=data.find(id).orElseThrow();var dispatch=dispatch(w,"GENERATE");
             if(dispatch==null)return;
             PlanTransport.Reply response;
-            try{response=transport.send("GENERATE",dispatch.input(),dispatch.deadline().toInstant());}
+            try{response=transport.send(dispatch.work().id(),dispatch.attempt(),"GENERATE",dispatch.input(),dispatch.deadline().toInstant());}
             catch(PlanTransport.Failure failure){recordFailure(dispatch,failure);return;}
             finally{release(reserved);}
             try{saveCandidate(dispatch,response);}catch(RuntimeException failure){pause(dispatch.work(),"CANDIDATE");throw failure;}
@@ -297,8 +319,13 @@ public final class PlanService implements MaterialDeletionParticipant {
                 payload=Map.of("model",MODEL,"configRevision",CONFIG,"policy",POLICY,"inputRevision",w.revision(),"resume",redact(c.facts().resume()),"jd",redact(c.facts().jd()),
                         "conditions",w.input(),"evidence",proof,"maxOutputTokens",4096);
                 data.write("UPDATE plan_workspace SET prompt=?::jsonb WHERE id=?",mapper.writeValueAsString(payload),w.id());}
+            if(transport.controlled()){
+                String blocked=trial.reserve(w,attempt,kind,hash(transport.wire(kind,payload)));
+                if(blocked!=null){state(w,"WAITING_MANUAL",blocked);return null;}
+            }
             data.write("INSERT INTO plan_external_attempt(id,workspace_id,kind,ordinal,category,generation,input_revision,state,deadline_at) VALUES(?,?,?,?,?,?,?,'DISPATCH_INTENT',?)",
                     attempt,w.id(),kind,ordinal,category,w.generation(),w.revision(),deadline);
+            if(transport.controlled())trial.attach(w.id(),attempt,kind);
             if(kind.equals("QUERY"))data.write("UPDATE plan_workspace SET query_used=query_used+1 WHERE id=?",w.id());
             else{String column=switch(category){case "INITIAL"->"initial_used";case "AUTO"->"auto_used";default->"manual_used";};
                 data.write("UPDATE plan_workspace SET state='RUNNING',"+column+"="+column+"+1 WHERE id=?",w.id());}
@@ -315,14 +342,14 @@ public final class PlanService implements MaterialDeletionParticipant {
     /** 已核实用量独立于候选资格；只补原attempt，不因向量/停用/删除拒收而丢失回执。 */
     private void auditReceipt(Dispatch d,PlanTransport.Receipt receipt){
         transaction.executeWithoutResult(status->{accounts.lockCurrentAccount(d.work().owner());
-            materials.lockRoot(d.work().owner(),d.work().root(),true);data.lock(d.work().id());receipt(d.attempt(),receipt);});
+            materials.lockRoot(d.work().owner(),d.work().root(),true);data.lock(d.work().id());receipt(d.attempt(),receipt);trial.receipt(d.work().id(),d.attempt(),receipt);});
     }
     private boolean saveQuery(Dispatch d,PlanTransport.Reply response){
         try{
         // 回执登记也是原query的本地接收步骤；失败或提交未知必须进入同一暂停保护。
         auditReceipt(d,response.receipt());
         return Boolean.TRUE.equals(transaction.execute(status->{data.limitLockWait(d.deadline());var c=context(d.work(),true);receipt(d.attempt(),response.receipt());var w=c.work();
-            if(!c.valid() || !live(w,d.work()) || !data.now().isBefore(d.deadline())){
+            if(!c.valid() || !live(w,d.work()) || !data.now().isBefore(d.deadline()) || !trial.receiveAllowed(w.id())){
                 data.write("UPDATE plan_external_attempt SET state='FENCED' WHERE id=?",d.attempt());
                 if(c.valid() && w.generation()==d.work().generation() && !List.of("SUCCEEDED","FAILED_FINAL").contains(w.state()))state(w,"WAITING_MANUAL","LATE_RESPONSE");return false;}
             JsonNode vector=response.content().path("vector");if(!vector.isArray() || vector.size()!=1024)throw new Rejected("INVALID_CANDIDATE","查询向量维度错误");
@@ -340,7 +367,7 @@ public final class PlanService implements MaterialDeletionParticipant {
         String payload=mapper.writeValueAsString(response.content());
         if(payload.getBytes(java.nio.charset.StandardCharsets.UTF_8).length>65536){recordFailure(d,new PlanTransport.Failure("RESPONSE_LIMIT",response.receipt()));return;}
         transaction.executeWithoutResult(status->{data.limitLockWait(d.deadline());var c=context(d.work(),true);var w=c.work();receipt(d.attempt(),response.receipt());
-            if(!c.valid() || w.generation()!=d.work().generation() || List.of("SUCCEEDED","FAILED_FINAL","INVALIDATED").contains(w.state())){
+            if(!c.valid() || w.generation()!=d.work().generation() || List.of("SUCCEEDED","FAILED_FINAL","INVALIDATED").contains(w.state()) || !trial.receiveAllowed(w.id())){
                 data.write("UPDATE plan_external_attempt SET state='FENCED' WHERE id=?",d.attempt());return;}
             if(!live(w,d.work())){data.write("UPDATE plan_external_attempt SET state='FENCED' WHERE id=?",d.attempt());state(w,"WAITING_MANUAL","LATE_RESPONSE");return;}
             if(!knowledge.stillEligible(evidence(w).pieces())){data.write("UPDATE plan_external_attempt SET state='FENCED' WHERE id=?",d.attempt());state(w,"BLOCKED_KNOWLEDGE","KNOWLEDGE_STOPPED");return;}
@@ -353,6 +380,7 @@ public final class PlanService implements MaterialDeletionParticipant {
         transaction.executeWithoutResult(status->{var c=context(original,true);var w=c.work();if(!c.valid() || "SUCCEEDED".equals(w.state()))return;
             var candidate=data.candidate(w.id()).orElse(null);if(candidate==null || candidate.generation()!=w.generation() || candidate.revision()!=w.revision())return;
             var proof=evidence(w);if(!knowledge.stillEligible(proof.pieces())){state(w,"BLOCKED_KNOWLEDGE","KNOWLEDGE_STOPPED");return;}
+            if(!trial.receiveAllowed(w.id())){state(w,"WAITING_MANUAL","TRIAL_STOPPED");return;}
             try{
                 Candidate parsed=mapper.readerFor(Candidate.class).with(tools.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).readValue(candidate.payload());
                 if(parsed==null)throw new Rejected("INVALID_CANDIDATE","候选不能为空");
@@ -362,13 +390,14 @@ public final class PlanService implements MaterialDeletionParticipant {
                     state(w,"WAITING_INPUT",parsed.materialDecision()+":"+findings);return;
                 }
                 validate(parsed.plan(),w.input(),c.facts(),proof.pieces().stream().map(PlanEvidenceFacts.Piece::chunkId).toList());
-                data.write("INSERT INTO interview_plan(id,revision_id,workspace_id,payload,eligibility) VALUES(?,?,?,?::jsonb,'ENGINEERING_ONLY') ON CONFLICT(workspace_id) DO NOTHING",
-                        UUID.randomUUID(),UUID.randomUUID(),w.id(),mapper.writeValueAsString(parsed.plan()));
+                data.write("INSERT INTO interview_plan(id,revision_id,workspace_id,payload,eligibility) VALUES(?,?,?,?::jsonb,?) ON CONFLICT(workspace_id) DO NOTHING",
+                        UUID.randomUUID(),UUID.randomUUID(),w.id(),mapper.writeValueAsString(parsed.plan()),trial.eligibility(w.id()));
                 // 原生成结果身份不变；初始修订和当前指针与接收共同提交。
                 data.write("INSERT INTO plan_revision(id,plan_id,revision_no,payload,created_at) SELECT revision_id,id,1,payload,created_at FROM interview_plan WHERE workspace_id=? ON CONFLICT DO NOTHING",w.id());
                 data.write("UPDATE interview_plan SET current_revision_id=revision_id WHERE workspace_id=? AND current_revision_id IS NULL",w.id());
                 data.write("UPDATE plan_generation_candidate SET state='ACCEPTED' WHERE id=?",candidate.id());state(w,"SUCCEEDED",null);
             }catch(Rejected | MaterialPlanFacts.Rejected | tools.jackson.core.JacksonException invalid){
+                trial.stop(w.id(),"INVALID_CANDIDATE");
                 data.write("UPDATE plan_generation_candidate SET state='REJECTED' WHERE id=?",candidate.id());failure(w,"INVALID_CANDIDATE",false);
             }
         });
@@ -377,6 +406,7 @@ public final class PlanService implements MaterialDeletionParticipant {
         try{
         auditReceipt(d,failure.receipt);
         transaction.executeWithoutResult(status->{var c=context(d.work(),true);receipt(d.attempt(),failure.receipt);
+            trial.stop(d.work().id(),failure.category);
             if(c.valid() && c.work().generation()==d.work().generation() && !"SUCCEEDED".equals(c.work().state()))failure(c.work(),failure.category,"EXTERNAL_UNKNOWN".equals(failure.category));
         });}catch(RuntimeException unknown){pause(d.work(),"EXTERNAL_UNKNOWN");throw unknown;}
     }
@@ -385,6 +415,7 @@ public final class PlanService implements MaterialDeletionParticipant {
         data.write("UPDATE plan_external_attempt SET state=? WHERE id=?",unknown?"EXTERNAL_UNKNOWN":"FAILED",a.id());
         if(unknown){state(w,"WAITING_MANUAL","EXTERNAL_UNKNOWN");return;}
         if(a.kind().equals("QUERY")){state(w,"WAITING_MANUAL",reason);return;}
+        if(transport.controlled()){state(w,"WAITING_MANUAL",reason);return;}
         if(!w.manualMode() && w.automatic()==0){data.write("UPDATE plan_workspace SET state='QUEUED',reason=?,queued_at=clock_timestamp() WHERE id=?",reason,w.id());}
         else state(w,w.manual()>=2?"FAILED_FINAL":"WAITING_MANUAL",reason);
     }
@@ -400,6 +431,7 @@ public final class PlanService implements MaterialDeletionParticipant {
     @Override public void invalidateAndRegister(UUID owner,UUID root,UUID deletion){
         for(UUID id:data.graphs(root)){data.lock(id);var w=data.find(id).orElseThrow();if(!w.owner().equals(owner))throw new IllegalStateException("Plan owner mismatch");
             data.write("UPDATE plan_workspace SET state='INVALIDATED',reason='DELETED',generation=generation+1 WHERE id=?",id);
+            trial.stop(id,"DELETED");
             data.write("INSERT INTO material_cleanup_item(id,delete_request_id,target_type,target_id,state) VALUES(?,?,'PLAN_PRIVATE_GRAPH',?,'PENDING') ON CONFLICT DO NOTHING",UUID.randomUUID(),deletion,id);
         }
     }
@@ -407,6 +439,7 @@ public final class PlanService implements MaterialDeletionParticipant {
         for(var target:data.cleanup())try{transaction.executeWithoutResult(status->{
             UUID owner=(UUID)target.get("owner_id"),root=(UUID)target.get("resume_id"),id=(UUID)target.get("target_id");
             accounts.lockCurrentAccount(owner);if(materials.lockRoot(owner,root,true))throw new IllegalStateException("Cannot purge an active root");data.lock(id);
+            trial.purge(id);
             data.write("UPDATE plan_workspace SET input=NULL,query_vector=NULL,evidence=NULL,prompt=NULL,last_resume_digest=NULL,cleanup_attempted_at=clock_timestamp(),cleanup_error_code=NULL WHERE id=?",id);
             data.write("UPDATE plan_input_revision SET confirmation=NULL WHERE workspace_id=?",id);
             data.write("UPDATE plan_generation_candidate SET payload=NULL,state='PURGED' WHERE workspace_id=?",id);

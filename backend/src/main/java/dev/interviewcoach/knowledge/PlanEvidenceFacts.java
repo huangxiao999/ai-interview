@@ -53,6 +53,14 @@ public final class PlanEvidenceFacts {
             throw new Rejected("QUERY_CONFIGURATION_CONFLICT");
         return new Binding(c.configDigest(),c.retrievalPolicy());
     }
+    /** 真实query不得与其他供应商/业务空间的document索引静默混用；验证仍走同一公开规则。 */
+    public void requireTrialConfiguration(UUID collection,String digest,String workspace){
+        lock(collection,digest);var c=collections.find(collection).orElseThrow();var config=mapper.readTree(c.config());
+        if(!"aliyun-bailian".equals(config.path("provider").asString()) || !workspace.equals(config.path("workspace").asString())
+                || !"cn-beijing".equals(config.path("region").asString()) || !"dashscope-native-dense-v2".equals(config.path("adapterRevision").asString())
+                || !("https://"+workspace+".cn-beijing.maas.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding").equals(config.path("endpoint").asString()))
+            throw new Rejected("QUERY_CONFIGURATION_CONFLICT");
+    }
     public void lockRebinding(UUID original,String digest,UUID replacement,String replacementDigest){
         transaction();
         var a=collections.find(original).orElseThrow(()->new Rejected("KNOWLEDGE_NOT_READY"));

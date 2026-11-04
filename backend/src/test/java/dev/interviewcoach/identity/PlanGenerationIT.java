@@ -66,8 +66,8 @@ class PlanGenerationIT {
         Flyway.configure().dataSource(System.getenv("DB_URL"),System.getenv("DB_USERNAME"),System.getenv("DB_PASSWORD")).schemas("app").defaultSchema("app").target("9").load().migrate();
         var old=jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' ORDER BY installed_rank");
         var flyway=Flyway.configure().dataSource(System.getenv("DB_URL"),System.getenv("DB_USERNAME"),System.getenv("DB_PASSWORD")).schemas("app").defaultSchema("app").load();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(4);flyway.validate();assertThat(flyway.migrate().migrationsExecuted).isZero();
-        assertThat(jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' AND version NOT IN ('10','11','12','13') ORDER BY installed_rank")).isEqualTo(old);
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(5);flyway.validate();assertThat(flyway.migrate().migrationsExecuted).isZero();
+        assertThat(jdbc.queryForList("SELECT version,checksum FROM flyway_schema_history WHERE type='SQL' AND version NOT IN ('10','11','12','13','14') ORDER BY installed_rank")).isEqualTo(old);
         supplier=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);supplierThreads=Executors.newFixedThreadPool(8);supplier.setExecutor(supplierThreads);
         supplier.createContext("/query",exchange->{
             int sent=QUERIES.incrementAndGet();HTTP_EVENTS.add(Map.of("kind","QUERY","sequence",sent,"mode",MODE.get(),"at",java.time.Instant.now().toString()));var raw=JSON.readTree(exchange.getRequestBody().readAllBytes());assertThat(raw.path("dimension").asInt()).isEqualTo(1024);
@@ -557,8 +557,12 @@ class PlanGenerationIT {
         }
     }
     @TestConfiguration(proxyBeanMethods=false) static class FixtureConfig {
-        @Bean @Primary EmbeddingGateway indexSupplier(){return new EmbeddingGateway(){public boolean available(){return true;}public Map<String,String> configuration(){return Map.of("provider","synthetic-fixture","model","qwen3.7-text-embedding-flash","dimension","1024","textType","document","outputType","dense");}public Response embed(List<String> texts,java.time.Instant deadline){return new Response(texts.stream().map(t->KnowledgeCollectionIT.vector(0)).toList(),"synthetic-index",10L);}};}
-        @Bean @Primary DataSource faultDataSource(){return new DelegatingDataSource(new DriverManagerDataSource(System.getenv("DB_URL")+"?currentSchema=app",System.getenv("DB_USERNAME"),System.getenv("DB_PASSWORD"))){
+        // 仅外部向量是合成替身；声明真实document配置契约，M-06不设验证专用资格放行。
+        @Bean @Primary EmbeddingGateway indexSupplier(){return new EmbeddingGateway(){public boolean available(){return true;}public Map<String,String> configuration(){return Map.of("provider","aliyun-bailian","model","qwen3.7-text-embedding-flash","dimension","1024","textType","document","outputType","dense","workspace","isolated-fixture","region","cn-beijing","adapterRevision","dashscope-native-dense-v2","endpoint","https://isolated-fixture.cn-beijing.maas.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding");}public Response embed(List<String> texts,java.time.Instant deadline){return new Response(texts.stream().map(t->KnowledgeCollectionIT.vector(0)).toList(),"synthetic-index",10L);}};}
+        // 复用生产JDBC基线中的连接池，避免每条SQL新建TCP；故障仍注入真实PG连接。
+        @Bean(destroyMethod="close") DataSource testPool(){return org.springframework.boot.jdbc.DataSourceBuilder.create()
+                .url(System.getenv("DB_URL")+"?currentSchema=app").username(System.getenv("DB_USERNAME")).password(System.getenv("DB_PASSWORD")).build();}
+        @Bean @Primary DataSource faultDataSource(@org.springframework.beans.factory.annotation.Qualifier("testPool") DataSource pool){return new DelegatingDataSource(pool){
             @Override public Connection getConnection()throws SQLException{return wrap(super.getConnection());}
         };}
         static Connection wrap(Connection real){
