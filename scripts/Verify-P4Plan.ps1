@@ -1,4 +1,4 @@
-param([ValidateSet('Migration','Plan','Revision','History','Collection','Index','Materials')][string]$Suite='Plan', [ValidatePattern('^[A-Za-z0-9_*+]*$')][string]$Cases='')
+param([ValidateSet('Migration','Plan','Revision','History','Collection','Index','Materials','Trial')][string]$Suite='Plan', [ValidatePattern('^[A-Za-z0-9_*+]*$')][string]$Cases='')
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $projectRoot=Split-Path $PSScriptRoot -Parent
@@ -9,6 +9,7 @@ foreach($name in @('DB_URL','DB_USERNAME','DB_PASSWORD','P4_PLAN_TEST_DATABASE',
  $saved[$name]=[Environment]::GetEnvironmentVariable($name,'Process')
 }
 $appProcess=$null
+if($Suite -eq 'Trial' -and (-not $Cases -or $Cases.Contains('+') -or $Cases.Contains('*'))){throw 'Trial requires exactly one scenario per fresh retained database; no authorization reset between cases'}
 try{
  Set-Location $projectRoot
  $prefix=switch($Suite){'Collection'{'p3dt03_verify_'}'Index'{'p3dt02_verify_'}'Materials'{'p2dt01_verify_'}default{'p4dt01_verify_'}}
@@ -51,7 +52,7 @@ try{
   docker exec $database psql -U $dbUser -d $database -v ON_ERROR_STOP=1 -c "SELECT version,success FROM app.flyway_schema_history ORDER BY installed_rank; SELECT count(*) FROM app.plan_workspace;" *> (Join-Path $projectRoot ".cache/$database-migration.log")
   if(-not $healthy -or $LASTEXITCODE -ne 0){throw "Actual JAR startup/migration failed: $stdout"}
  }else{
-  $test=switch($Suite){'Plan'{'PlanGenerationIT'}'Revision'{'PlanRevisionIT'}'History'{'PlanHistoryIT'}'Collection'{$env:P3_COLLECTION_TEST_DATABASE=$database;'KnowledgeCollectionIT'}'Index'{$env:P3_INDEX_TEST_DATABASE=$database;'KnowledgeIndexIT'}'Materials'{$env:P2_DT01_TEST_DATABASE=$database;'ResumeMaterialIT'}}
+  $test=switch($Suite){'Trial'{'ControlledPlanTrialIT'}'Plan'{'PlanGenerationIT'}'Revision'{'PlanRevisionIT'}'History'{'PlanHistoryIT'}'Collection'{$env:P3_COLLECTION_TEST_DATABASE=$database;'KnowledgeCollectionIT'}'Index'{$env:P3_INDEX_TEST_DATABASE=$database;'KnowledgeIndexIT'}'Materials'{$env:P2_DT01_TEST_DATABASE=$database;'ResumeMaterialIT'}}
   $start=[DateTime]::UtcNow
   $selection=if($Cases){"${test}#$Cases"}else{$test}
   if($Suite -eq 'Materials' -and -not $Cases){$selection='ResumeMaterialIT,CleanupRepositoryIT'}

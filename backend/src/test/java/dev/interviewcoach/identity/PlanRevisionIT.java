@@ -163,13 +163,13 @@ class PlanRevisionIT {
         var before=jdbc.queryForList("SELECT id,revision_id,payload::text AS payload,created_at FROM "+schema+".interview_plan ORDER BY id");
         var checksums=jdbc.queryForList("SELECT version,checksum FROM "+schema+".flyway_schema_history WHERE type='SQL' ORDER BY installed_rank");
         var upgrade=org.flywaydb.core.Flyway.configure().dataSource(System.getenv("DB_URL"),System.getenv("DB_USERNAME"),System.getenv("DB_PASSWORD")).schemas(schema).defaultSchema(schema).load();
-        assertThat(upgrade.migrate().migrationsExecuted).isEqualTo(1);upgrade.validate();assertThat(upgrade.migrate().migrationsExecuted).isZero();
+        assertThat(upgrade.migrate().migrationsExecuted).isEqualTo(2);upgrade.validate();assertThat(upgrade.migrate().migrationsExecuted).isZero();
         assertThat(jdbc.queryForList("SELECT id,revision_id,payload::text AS payload,created_at FROM "+schema+".interview_plan ORDER BY id")).isEqualTo(before);
-        assertThat(jdbc.queryForList("SELECT version,checksum FROM "+schema+".flyway_schema_history WHERE type='SQL' AND version<>'13' ORDER BY installed_rank")).isEqualTo(checksums);
+        assertThat(jdbc.queryForList("SELECT version,checksum FROM "+schema+".flyway_schema_history WHERE type='SQL' AND version NOT IN ('13','14') ORDER BY installed_rank")).isEqualTo(checksums);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM "+schema+".interview_plan p LEFT JOIN "+schema+".plan_revision r ON r.plan_id=p.id AND r.id=p.revision_id WHERE r.id IS NULL OR p.current_revision_id IS DISTINCT FROM p.revision_id OR r.revision_no<>1 OR r.payload IS DISTINCT FROM p.payload",Integer.class)).isZero();
         int active=jdbc.queryForObject("SELECT count(*) FROM "+schema+".plan_revision WHERE payload IS NOT NULL",Integer.class),purged=jdbc.queryForObject("SELECT count(*) FROM "+schema+".plan_revision WHERE payload IS NULL",Integer.class);
         assertThat(active).isPositive();assertThat(purged).isPositive();
-        java.nio.file.Files.writeString(Path.of("../.cache",database+"-revision-upgrade.json"),JSON.writeValueAsString(Map.of("schema",schema,"activePreserved",active,"purgedPreserved",purged,"oldChecksums",checksums,"migrationsApplied",1,"repeatMigrations",0)));
+        java.nio.file.Files.writeString(Path.of("../.cache",database+"-revision-upgrade.json"),JSON.writeValueAsString(Map.of("schema",schema,"activePreserved",active,"purgedPreserved",purged,"oldChecksums",checksums,"migrationsApplied",2,"repeatMigrations",0)));
     }
     @Test @Order(90) void actualChromeEditsCasRecoveryAndIdentityProtection() throws Exception {
         var browserAccount=KnowledgeCollectionIT.account(AccountAuthority.TRIAL_USER);Client c=new Client(browserAccount);var material=material(c);int port=freePort();
