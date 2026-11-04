@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { onUnmounted, watch } from 'vue'
 import { usePlanRevisionsStore } from '../stores/planRevisions'
-const props = defineProps<{ planId: string }>()
+const props = defineProps<{ planId: string; revisionId?: string; readOnly?: boolean }>()
 const revisions = usePlanRevisionsStore()
 watch(
-  () => props.planId,
-  (id) => void revisions.open(id),
+  () => [props.planId, props.revisionId] as const,
+  ([id, revision]) => void revisions.open(id, revision ?? ''),
   { immediate: true },
 )
 // 删除/身份核实会移除编辑器；失效所有在途响应，禁止恢复私有草稿。
@@ -97,7 +97,7 @@ function remove(index: number): void {
       <fieldset
         v-for="(topic, i) in revisions.draft"
         :key="topic.topicId"
-        :disabled="!revisions.editable"
+        :disabled="readOnly || !revisions.editable"
         @input="revisions.dirty = true"
       >
         <legend>主题 {{ i + 1 }}：{{ topic.name }}</legend>
@@ -152,6 +152,7 @@ function remove(index: number): void {
         id="revision-add"
         type="button"
         :disabled="
+          readOnly ||
           !revisions.editable ||
           revisions.draft.length >= revisions.view.options.length ||
           revisions.draft.length >= 15
@@ -163,7 +164,7 @@ function remove(index: number): void {
       <button
         id="revision-save"
         type="button"
-        :disabled="!revisions.editable || !revisions.dirty"
+        :disabled="readOnly || !revisions.editable || !revisions.dirty"
         @click="revisions.send('SAVE')"
       >
         保存新修订
@@ -172,7 +173,11 @@ function remove(index: number): void {
         id="revision-confirm"
         type="button"
         :disabled="
-          revisions.busy || revisions.unknown || revisions.dirty || !revisions.view.canConfirm
+          readOnly ||
+          revisions.busy ||
+          revisions.unknown ||
+          revisions.dirty ||
+          !revisions.view.canConfirm
         "
         @click="revisions.send('CONFIRM')"
       >

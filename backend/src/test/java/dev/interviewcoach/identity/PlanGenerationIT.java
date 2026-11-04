@@ -41,6 +41,7 @@ class PlanGenerationIT {
     static final AtomicBoolean PAUSE_READ_FAIL=new AtomicBoolean();
     static final AtomicBoolean RECEIPT_ROLLBACK=new AtomicBoolean();
     static final AtomicBoolean REVISION_ROLLBACK=new AtomicBoolean();
+    static final AtomicBoolean HISTORY_READ_FAIL=new AtomicBoolean();
     static final AtomicBoolean EVIDENCE_ROLLBACK=new AtomicBoolean(),EVIDENCE_COMMIT_LOSS=new AtomicBoolean();
     static final AtomicInteger EVIDENCE_FAILURES=new AtomicInteger();
     static final AtomicInteger PAUSE_READS=new AtomicInteger();
@@ -537,6 +538,7 @@ class PlanGenerationIT {
             return (Connection)Proxy.newProxyInstance(Connection.class.getClassLoader(),new Class<?>[]{Connection.class},(proxy,method,args)->{
                 try{
                     if(method.getName().equals("prepareStatement") && args[0] instanceof String sql){
+                        if(sql.startsWith("SELECT w.id,w.create_operation_id") && HISTORY_READ_FAIL.compareAndSet(true,false))throw new SQLException("Synthetic history query unavailable","08006");
                         if(sql.startsWith("SELECT * FROM plan_workspace") && Thread.currentThread().getName().contains("scheduling") && PAUSE_READ_FAIL.get()){PAUSE_READS.incrementAndGet();throw new SQLException("Synthetic pause read unavailable","08006");}
                         if(sql.startsWith("INSERT INTO plan_generation_candidate"))stage.set("CANDIDATE");
                         if(sql.startsWith("INSERT INTO interview_plan"))stage.set("PLAN");

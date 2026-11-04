@@ -1,4 +1,4 @@
-param([ValidateSet('Migration','Plan','Revision','Collection','Index','Materials')][string]$Suite='Plan', [ValidatePattern('^[A-Za-z0-9_*+]*$')][string]$Cases='')
+param([ValidateSet('Migration','Plan','Revision','History','Collection','Index','Materials')][string]$Suite='Plan', [ValidatePattern('^[A-Za-z0-9_*+]*$')][string]$Cases='')
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $projectRoot=Split-Path $PSScriptRoot -Parent
@@ -51,7 +51,7 @@ try{
   docker exec $database psql -U $dbUser -d $database -v ON_ERROR_STOP=1 -c "SELECT version,success FROM app.flyway_schema_history ORDER BY installed_rank; SELECT count(*) FROM app.plan_workspace;" *> (Join-Path $projectRoot ".cache/$database-migration.log")
   if(-not $healthy -or $LASTEXITCODE -ne 0){throw "Actual JAR startup/migration failed: $stdout"}
  }else{
-  $test=switch($Suite){'Plan'{'PlanGenerationIT'}'Revision'{'PlanRevisionIT'}'Collection'{$env:P3_COLLECTION_TEST_DATABASE=$database;'KnowledgeCollectionIT'}'Index'{$env:P3_INDEX_TEST_DATABASE=$database;'KnowledgeIndexIT'}'Materials'{$env:P2_DT01_TEST_DATABASE=$database;'ResumeMaterialIT'}}
+  $test=switch($Suite){'Plan'{'PlanGenerationIT'}'Revision'{'PlanRevisionIT'}'History'{'PlanHistoryIT'}'Collection'{$env:P3_COLLECTION_TEST_DATABASE=$database;'KnowledgeCollectionIT'}'Index'{$env:P3_INDEX_TEST_DATABASE=$database;'KnowledgeIndexIT'}'Materials'{$env:P2_DT01_TEST_DATABASE=$database;'ResumeMaterialIT'}}
   $start=[DateTime]::UtcNow
   $selection=if($Cases){"${test}#$Cases"}else{$test}
   if($Suite -eq 'Materials' -and -not $Cases){$selection='ResumeMaterialIT,CleanupRepositoryIT'}

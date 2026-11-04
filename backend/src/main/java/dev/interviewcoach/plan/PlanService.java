@@ -45,7 +45,7 @@ public final class PlanService implements MaterialDeletionParticipant {
     record PlanDetail(UUID planId,UUID revisionId,Draft content,String eligibility,List<Source> sources){ }
     record Preparation(boolean available,String eligibility,List<PlanEvidenceFacts.Option> options){ }
     Preparation preparation(Actor actor){return transaction.execute(status->{user(actor,actor.accountId());return new Preparation(transport.available(),"ENGINEERING_ONLY",knowledge.options());});}
-    record View(UUID workspaceId,UUID operationId,UUID resumeId,UUID resumeVersionId,UUID jdVersionId,String state,String reason,int initialUsed,int autoUsed,int manualUsed,int queryUsed,
+    record View(UUID workspaceId,UUID createOperationId,UUID operationId,UUID resumeId,UUID resumeVersionId,UUID jdVersionId,String state,String reason,int initialUsed,int autoUsed,int manualUsed,int queryUsed,
                 long generation,OffsetDateTime queuedAt,OffsetDateTime deadlineAt,JsonNode materialReview,
                 List<Map<String,Object>> attempts,PlanDetail plan,String eligibility,boolean materialsCurrent,PlanEvidenceFacts.Option knowledgeBinding,
                 boolean canAcceptCandidate,boolean canRetry,boolean requiresCostConfirmation){ }
@@ -153,7 +153,8 @@ public final class PlanService implements MaterialDeletionParticipant {
                 mapper.readValue(p.get("payload").toString(),Draft.class),p.get("eligibility").toString(),evidence(w).pieces().stream().map(s->new Source(s.versionId(),s.sourceUrl(),s.sourceAnchor())).toList())).orElse(null);
         boolean hasCandidate=data.candidate(w.id()).isPresent();
         boolean resumable=facts.current() && configurationReady(w) && List.of("WAITING_MANUAL","PAUSED_LOCAL","BLOCKED_KNOWLEDGE").contains(w.state());
-        return new View(w.id(),w.operation(),w.root(),w.input().resumeVersionId(),w.input().jdVersionId(),w.state(),w.reason(),w.initial(),w.automatic(),w.manual(),w.query(),w.generation(),w.queued(),w.deadline(),
+        UUID createOperation=data.findCreateOperation(w.id());
+        return new View(w.id(),createOperation,w.operation(),w.root(),w.input().resumeVersionId(),w.input().jdVersionId(),w.state(),w.reason(),w.initial(),w.automatic(),w.manual(),w.query(),w.generation(),w.queued(),w.deadline(),
                 materials.review(w.id()),data.attempts(w.id()),result,"ENGINEERING_ONLY",facts.current(),
                 new PlanEvidenceFacts.Option(w.input().collectionId(),w.input().configDigest(),w.input().technology(),w.input().technologyVersion(),w.input().scenario(),w.input().claimKey()),
                 resumable && hasCandidate,resumable && !hasCandidate && (w.initial()==0 || w.manual()<2) && (w.vector()!=null || w.query()<3),

@@ -128,6 +128,12 @@ function parse(raw: unknown): RevisionView {
 export function currentRevision(plan: string): Promise<RevisionView> {
   return getJson(`/api/plans/${encodeURIComponent(plan)}/revisions/current`, parse)
 }
+export function fixedRevision(plan: string, revision: string): Promise<RevisionView> {
+  return getJson(
+    `/api/plans/${encodeURIComponent(plan)}/revisions/${encodeURIComponent(revision)}`,
+    parse,
+  )
+}
 export function revisionOperation(operation: string): Promise<RevisionView> {
   return getJson(`/api/plan-revision-operations/${encodeURIComponent(operation)}`, parse)
 }

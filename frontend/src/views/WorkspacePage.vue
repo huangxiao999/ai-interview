@@ -441,6 +441,9 @@ async function retryIdentity(): Promise<void> {
       </div>
       <div v-if="status === 'authenticated' && identity" class="account-actions">
         <span class="account-name">{{ identity.loginName }}</span>
+        <RouterLink v-if="identity.authorities.includes('TRIAL_USER')" :to="{ name: 'planHistory' }"
+          >本人计划历史</RouterLink
+        >
         <RouterLink v-if="identity.authorities.includes('KNOWLEDGE_MAINTAINER')" to="/app/knowledge"
           >知识维护</RouterLink
         >
@@ -477,7 +480,7 @@ async function retryIdentity(): Promise<void> {
       <h1 id="workspace-heading" tabindex="-1">我的简历</h1>
       <template v-if="identity?.authorities.includes('TRIAL_USER')">
         <p class="stage-note">
-          准备资料 → 保存版本 → 回看历史。本阶段提供私有资料管理，面试计划尚未开放。
+          准备资料 → 保存版本 → 计划与历史。真实训练尚未开放，工程计划不能用于面试。
         </p>
         <nav class="material-nav" aria-label="资料导航">
           <a href="#resume-history-heading">我的简历与历史</a>
@@ -615,6 +618,11 @@ async function retryIdentity(): Promise<void> {
           >
             准备单场计划
           </RouterLink>
+          <RouterLink
+            v-if="selected"
+            :to="{ name: 'planHistory', query: { resumeId: selected.resumeId } }"
+            >此资料的计划历史</RouterLink
+          >
           <dialog
             v-if="confirmDeleteId"
             ref="deleteDialog"

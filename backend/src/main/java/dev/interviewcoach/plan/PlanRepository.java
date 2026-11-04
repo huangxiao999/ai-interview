@@ -20,6 +20,7 @@ class PlanRepository {
     record Attempt(UUID id,UUID workspace,String kind,int ordinal,String category,long generation,int revision,String state,OffsetDateTime deadline){ }
     record Stored(UUID id,UUID attempt,long generation,int revision,String payload,String state){ }
     Optional<Work> find(UUID id){return findWhere("id=?",id);}
+    UUID findCreateOperation(UUID id){return jdbc.queryForObject("SELECT create_operation_id FROM plan_workspace WHERE id=?",UUID.class,id);}
     Optional<Work> findWhere(String predicate,Object...args){
         return jdbc.query("SELECT * FROM plan_workspace WHERE "+predicate,(r,n)->new Work(r.getObject("id",UUID.class),r.getObject("owner_id",UUID.class),
                 r.getObject("resume_id",UUID.class),r.getObject("operation_id",UUID.class),r.getString("initial_digest"),
