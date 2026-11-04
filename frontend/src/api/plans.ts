@@ -33,6 +33,7 @@ export interface PlanTopic {
 }
 export interface PlanView {
   workspaceId: string
+  createOperationId: string
   operationId: string | null
   resumeId: string
   resumeVersionId: string
@@ -112,6 +113,7 @@ function parseView(payload: unknown): PlanView {
     throw new ApiError(null, 'INVALID_RESPONSE', '计划内容无法核实')
   return {
     workspaceId: text(v.workspaceId),
+    createOperationId: text(v.createOperationId),
     operationId: nullableText(v.operationId),
     resumeId: text(v.resumeId),
     resumeVersionId: text(v.resumeVersionId),

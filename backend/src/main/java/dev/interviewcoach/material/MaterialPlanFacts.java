@@ -19,6 +19,18 @@ public final class MaterialPlanFacts {
         this.materials=materials; this.jdbc=jdbc; this.mapper=mapper;
     }
     public record Snapshot(String resume, String jd, boolean current) { }
+    public record History(int resumeVersion, int jdVersion, boolean current) { }
+    /** 历史发现只投影版本身份，不加载/复制正文；调用者先持本人账号锁，资料根按稳定顺序核实。 */
+    public History history(UUID owner, UUID root, UUID resumeVersion, UUID jdVersion) {
+        lockRoot(owner,root,false);
+        return jdbc.query("SELECT r.version_no AS resume_no,j.version_no AS jd_no, "
+                +"r.id=(SELECT id FROM material_resume_version WHERE resume_id=? ORDER BY version_no DESC LIMIT 1) "
+                +"AND j.id=(SELECT id FROM material_jd_version WHERE resume_id=? ORDER BY version_no DESC LIMIT 1) AS current "
+                +"FROM material_resume_version r JOIN material_jd_version j ON j.resume_id=r.resume_id "
+                +"WHERE r.resume_id=? AND r.id=? AND j.id=?",
+                (r,n)->new History(r.getInt("resume_no"),r.getInt("jd_no"),r.getBoolean("current")),root,root,root,resumeVersion,jdVersion)
+                .stream().findFirst().orElseThrow(()->new Rejected("RESOURCE_UNAVAILABLE"));
+    }
     public record Finding(String kind, String source, String quote) { }
     public static final class Rejected extends RuntimeException {
         public final String code;

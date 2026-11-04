@@ -13,7 +13,11 @@ final class PlanApi {
     private final PlanService plans;
     private final CurrentActor actors;
     private final PlanRevisionService revisions;
-    PlanApi(PlanService plans,CurrentActor actors,PlanRevisionService revisions){this.plans=plans;this.actors=actors;this.revisions=revisions;}
+    private final PlanHistoryService history;
+    PlanApi(PlanService plans,CurrentActor actors,PlanRevisionService revisions,PlanHistoryService history){this.plans=plans;this.actors=actors;this.revisions=revisions;this.history=history;}
+    @GetMapping("/api/plan-workspaces")
+    ResponseEntity<PlanHistoryService.Page> history(Authentication auth,@RequestParam(required=false) UUID resumeId,
+            @RequestParam(required=false) String cursor,@RequestParam(defaultValue="20") int limit){return result(200,history.list(actors.require(auth),resumeId,cursor,limit));}
     @GetMapping("/api/plans/preparation")
     ResponseEntity<PlanService.Preparation> preparation(Authentication auth){return result(200,plans.preparation(actors.require(auth)));}
     @PostMapping("/api/plan-workspaces")

@@ -4,6 +4,7 @@ import { getIdentity } from '../api/auth'
 import { ApiError } from '../api/http'
 import {
   currentRevision,
+  fixedRevision,
   revisionOperation,
   writeRevision,
   type RevisionTopic,
@@ -29,6 +30,7 @@ export const usePlanRevisionsStore = defineStore('planRevisions', () => {
     receipt = ref<Receipt | null>(null)
   let epoch = 0,
     target = '',
+    selectedRevision = '',
     draftRevision = ''
   const total = computed(() => draft.value.reduce((n, t) => n + Number(t.questionCount), 0))
   const editable = computed(() => !!view.value?.canEdit && !busy.value && !unknown.value)
@@ -85,10 +87,11 @@ export const usePlanRevisionsStore = defineStore('planRevisions', () => {
     sessionStorage.removeItem(key)
     unknown.value = false
   }
-  async function open(plan: string): Promise<void> {
-    if (target !== plan) {
+  async function open(plan: string, revision = selectedRevision): Promise<void> {
+    if (target !== plan || selectedRevision !== revision) {
       hide()
       target = plan
+      selectedRevision = revision
       restore()
     }
     if (busy.value || session.status !== 'authenticated') return
@@ -101,7 +104,11 @@ export const usePlanRevisionsStore = defineStore('planRevisions', () => {
     busy.value = true
     try {
       const r = receipt.value?.plan === plan ? receipt.value : null
-      const result = r ? await revisionOperation(r.operation) : await currentRevision(plan)
+      const result = r
+        ? await revisionOperation(r.operation)
+        : selectedRevision
+          ? await fixedRevision(plan, selectedRevision)
+          : await currentRevision(plan)
       if (current !== epoch) return
       useView(result, !!r || !dirty.value)
       if (r) {

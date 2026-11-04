@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
+import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { useSessionStore } from '../stores/session'
 import { usePlansStore } from '../stores/plans'
 import { usePlanRevisionsStore } from '../stores/planRevisions'
@@ -57,13 +57,33 @@ async function load(): Promise<void> {
   resumes.value = []
   jobs.value = []
   if (session.status !== 'authenticated') return
+  resumeId.value = typeof route.query.resumeId === 'string' ? route.query.resumeId : ''
+  resumeVersion.value =
+    typeof route.query.resumeVersionId === 'string' ? route.query.resumeVersionId : ''
+  jdVersion.value = ''
+  confirmed.value = false
+  acceptCost.value = false
+  inputConfirmed.value = false
   try {
-    if (typeof route.query.operationId === 'string' && !plans.receipt)
+    if (plans.receipt)
+      await plans.query(
+        typeof route.query.workspaceId !== 'string' && typeof route.query.operationId !== 'string',
+      )
+    if (current !== generation) return
+    if (
+      resumeId.value &&
+      plans.receipt &&
+      plans.receipt.resumeId !== resumeId.value &&
+      plans.canNewPlan
+    )
+      plans.newPlan()
+    if (typeof route.query.workspaceId === 'string')
+      await plans.openWorkspace(route.query.workspaceId)
+    else if (typeof route.query.operationId === 'string')
       await plans.openLink(
         route.query.operationId,
         typeof route.query.kind === 'string' ? route.query.kind : 'GENERATE_PLAN',
       )
-    if (plans.receipt) await plans.query()
     if (current !== generation) return
     if (plans.view) {
       resumeId.value = plans.view.resumeId
@@ -88,7 +108,6 @@ async function load(): Promise<void> {
       resumeVersion.value = resumeVersion.value || r[0]?.versionId || ''
       jdVersion.value = plans.view?.jdVersionId || j[0]?.versionId || ''
     }
-    await plans.query()
   } catch {
     if (current === generation)
       preparationMessage.value = '资料或知识范围暂不可核实，请返回资料页或重试'
@@ -107,6 +126,24 @@ async function start(): Promise<void> {
     newPlanIntent: true,
   })
 }
+async function queryOriginal(): Promise<void> {
+  const workspace = plans.receipt?.workspace
+  if (
+    workspace &&
+    typeof route.query.workspaceId === 'string' &&
+    workspace !== route.query.workspaceId
+  ) {
+    await router.push({ name: 'plan', query: { workspaceId: workspace } })
+    return
+  }
+  await plans.query()
+  if (
+    plans.view &&
+    typeof route.query.workspaceId === 'string' &&
+    route.query.workspaceId !== plans.view.workspaceId
+  )
+    await router.replace({ name: 'plan', query: { workspaceId: plans.view.workspaceId } })
+}
 async function prepareNew(): Promise<void> {
   const root = plans.view?.resumeId
   if (!root || !plans.canNewPlan || revisions.busy || revisions.unknown) return
@@ -120,8 +157,9 @@ async function prepareNew(): Promise<void> {
   resumeVersion.value = ''
   jdVersion.value = ''
   // 去掉旧操作和旧版本地址，再重新读当前本人版本；这一步只准备，不自动生成。
+  const previousPath = route.fullPath
   await router.replace({ name: 'plan', query: { resumeId: root } })
-  await load()
+  if (route.fullPath === previousPath) await load()
 }
 watch(
   () => [session.status, session.identity?.accountId] as const,
@@ -151,7 +189,13 @@ const timer = setInterval(() => {
     session.status === 'authenticated' &&
     !plans.busy &&
     plans.receipt &&
+    (!plans.view || plans.receipt.workspace === plans.view.workspaceId) &&
+    (typeof route.query.operationId !== 'string' ||
+      route.query.operationId === plans.receipt.operation) &&
+    (typeof route.query.workspaceId !== 'string' ||
+      route.query.workspaceId === plans.receipt.workspace) &&
     (!plans.view ||
+      plans.unknown ||
       ['QUEUED', 'PREPARING_EVIDENCE', 'RUNNING', 'CANDIDATE_READY'].includes(plans.view.state))
   )
     void plans.query()
@@ -164,6 +208,7 @@ onUnmounted(() => {
   clearInterval(timer)
   window.removeEventListener('beforeunload', warnUnsaved)
   revisions.hide()
+  plans.hide()
 })
 function warnUnsaved(event: BeforeUnloadEvent): void {
   if (revisions.dirty) {
@@ -178,6 +223,17 @@ onBeforeRouteLeave(() => {
   revisions.hide()
   plans.hide()
 })
+onBeforeRouteUpdate(() => {
+  if (revisions.dirty && !window.confirm('存在未保存的计划草稿，切换记录将丢弃草稿，是否继续？'))
+    return false
+  generation++
+  revisions.hide()
+  plans.hide()
+})
+watch(
+  () => route.fullPath,
+  () => void load(),
+)
 </script>
 
 <template>
@@ -185,6 +241,7 @@ onBeforeRouteLeave(() => {
     <header>
       <h1>单场面试计划</h1>
       <RouterLink to="/app">返回本人资料</RouterLink>
+      <RouterLink :to="{ name: 'planHistory' }">本人计划历史</RouterLink>
     </header>
     <template v-if="session.status === 'authenticated'">
       <p>{{ preparationMessage }}</p>
@@ -240,7 +297,7 @@ onBeforeRouteLeave(() => {
         id="plan-query"
         type="button"
         :disabled="plans.busy"
-        @click="plans.query"
+        @click="queryOriginal"
       >
         核实原操作
       </button>
@@ -354,7 +411,13 @@ onBeforeRouteLeave(() => {
               ><span v-else>来源链接协议不可访问</span>
             </li>
           </ul>
-          <PlanRevisionEditor :plan-id="plans.view.plan.planId" />
+          <PlanRevisionEditor
+            :plan-id="plans.view.plan.planId"
+            :read-only="plans.unknown"
+            :revision-id="
+              typeof route.query.revisionId === 'string' ? route.query.revisionId : undefined
+            "
+          />
         </section>
         <button
           v-if="plans.canNewPlan"
