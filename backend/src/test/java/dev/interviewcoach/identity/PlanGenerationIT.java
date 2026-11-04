@@ -71,7 +71,7 @@ class PlanGenerationIT {
         supplier=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);supplierThreads=Executors.newFixedThreadPool(8);supplier.setExecutor(supplierThreads);
         supplier.createContext("/query",exchange->{
             int sent=QUERIES.incrementAndGet();HTTP_EVENTS.add(Map.of("kind","QUERY","sequence",sent,"mode",MODE.get(),"at",java.time.Instant.now().toString()));var raw=JSON.readTree(exchange.getRequestBody().readAllBytes());assertThat(raw.path("dimension").asInt()).isEqualTo(1024);
-            Object vector=MODE.get().equals("BAD_VECTOR")?List.of(1d):KnowledgeCollectionIT.vector(0);
+            Object vector=MODE.get().equals("BAD_VECTOR")?List.of(1d):MODE.get().equals("ZERO_VECTOR")?Collections.nCopies(1024,0d):KnowledgeCollectionIT.vector(0);
             byte[] bytes=JSON.writeValueAsBytes(Map.of("content",Map.of("vector",vector),"requestId","query-"+UUID.randomUUID(),"inputTokens",10));
             exchange.sendResponseHeaders(MODE.get().equals("QUERY_FAIL")?500:200,bytes.length);exchange.getResponseBody().write(bytes);exchange.close();
         });
@@ -143,10 +143,38 @@ class PlanGenerationIT {
         MODE.set("NORMAL");resume(c,op,"RETRY",true);awaitState(c,op,"SUCCEEDED");assertThat(operation(c,op).path("autoUsed").asInt()).isZero();assertThat(operation(c,op).path("manualUsed").asInt()).isEqualTo(1);
     }
     @Test @Order(5) void malformedQueryKeepsVerifiedReceiptWithoutGeneration() throws Exception {
-        MODE.set("BAD_VECTOR");Client c=new Client(owner);var w=create(c);int before=GENERATIONS.get();UUID op=UUID.randomUUID();generate(c,w,op);awaitState(c,op,"WAITING_MANUAL");
-        var receipt=jdbc.queryForMap("SELECT request_id,input_tokens,cost_unknown FROM plan_external_attempt WHERE workspace_id=?",id(w,"workspaceId"));
+        MODE.set("BAD_VECTOR");Client c=new Client(owner);var w=create(c);int before=GENERATIONS.get(),queries=QUERIES.get();UUID op=UUID.randomUUID();generate(c,w,op);awaitState(c,op,"WAITING_MANUAL");
+        // 首次观察可能落在WAITING_MANUAL提交与错误后续准备之间，必须再核后台处理后的稳定事实。
+        Thread.sleep(600);var rejected=operation(c,op);
+        assertThat(rejected.path("state").asString()).isEqualTo("WAITING_MANUAL");
+        assertThat(rejected.path("reason").asString()).isEqualTo("INVALID_QUERY");
+        assertThat(rejected.path("queryUsed").asInt()).isEqualTo(1);assertThat(QUERIES.get()-queries).isEqualTo(1);
+        var receipt=jdbc.queryForMap("SELECT id,request_id,input_tokens,cost_unknown,state FROM plan_external_attempt WHERE workspace_id=?",id(w,"workspaceId"));
         assertThat(receipt.get("request_id")).isNotNull();assertThat(((Number)receipt.get("input_tokens")).longValue()).isEqualTo(10);assertThat(receipt.get("cost_unknown")).isEqualTo(true);
+        assertThat(receipt.get("state")).isEqualTo("FAILED");
         assertThat(operation(c,op).path("initialUsed").asInt()).isZero();assertThat(GENERATIONS.get()).isEqualTo(before);
+        assertThat(jdbc.queryForObject("SELECT query_vector IS NULL AND evidence IS NULL AND prompt IS NULL FROM plan_workspace WHERE id=?",Boolean.class,id(w,"workspaceId"))).isTrue();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM plan_generation_candidate WHERE workspace_id=?",Integer.class,id(w,"workspaceId"))).isZero();
+        MODE.set("NORMAL");resume(c,op,"RETRY",false);awaitState(c,op,"SUCCEEDED");
+        var done=operation(c,op);assertThat(done.path("queryUsed").asInt()).isEqualTo(2);assertThat(done.path("initialUsed").asInt()).isEqualTo(1);
+        assertThat(done.path("autoUsed").asInt()).isZero();assertThat(done.path("manualUsed").asInt()).isZero();
+        assertThat(QUERIES.get()-queries).isEqualTo(2);assertThat(GENERATIONS.get()-before).isEqualTo(1);
+        assertThat(jdbc.queryForMap("SELECT id,request_id,input_tokens,cost_unknown,state FROM plan_external_attempt WHERE id=?",receipt.get("id"))).isEqualTo(receipt);
+    }
+    @Test @Order(5) void rejectedKnowledgeVectorKeepsOriginalManualQueryBudget() throws Exception {
+        // 维度合法但全零，必须由M-06实际向量规则拒收；不是测试专用校验器。
+        MODE.set("ZERO_VECTOR");Client c=new Client(owner);var w=create(c);UUID workspace=id(w,"workspaceId"),op=UUID.randomUUID();
+        int q=QUERIES.get(),g=GENERATIONS.get();generate(c,w,op);
+        for(int ordinal=1;ordinal<=3;ordinal++){
+            awaitState(c,op,"WAITING_MANUAL");Thread.sleep(600);var v=operation(c,op);
+            assertThat(v.path("state").asString()).isEqualTo("WAITING_MANUAL");assertThat(v.path("reason").asString()).isEqualTo("INVALID_QUERY");
+            assertThat(v.path("queryUsed").asInt()).isEqualTo(ordinal);assertThat(QUERIES.get()-q).isEqualTo(ordinal);assertThat(GENERATIONS.get()).isEqualTo(g);
+            assertThat(v.path("initialUsed").asInt()+v.path("autoUsed").asInt()+v.path("manualUsed").asInt()).isZero();
+            if(ordinal<3){int next=ordinal+1;resume(c,op,"RETRY",false);await(()->jdbc.queryForObject("SELECT query_used FROM plan_workspace WHERE id=?",Integer.class,workspace)==next);}
+        }
+        assertThat(c.post("/api/plan-operations/"+op+"/resume",Map.of("action","RETRY","acceptUnknownCost",true),UUID.randomUUID()).statusCode()).isEqualTo(409);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM plan_external_attempt WHERE workspace_id=? AND kind='QUERY' AND state='FAILED' AND request_id IS NOT NULL AND input_tokens=10 AND cost_unknown",Integer.class,workspace)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM interview_plan WHERE workspace_id=?",Integer.class,workspace)).isZero();
     }
     @Test @Order(6) void candidateCommitAcknowledgmentLossOnlyRecoversSameCandidate() throws Exception {
         Client c=new Client(owner);var w=create(c);COMMIT_LOSS.set("CANDIDATE");UUID op=UUID.randomUUID();generate(c,w,op);awaitState(c,op,"PAUSED_LOCAL");
